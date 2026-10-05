@@ -1,0 +1,227 @@
+import { Router, type Request } from 'express';
+import { z } from 'zod';
+import { query } from '../../db/pool.js';
+import { imageUpload } from '../../lib/upload.js';
+import { optionalAuth } from '../../middleware/auth.js';
+import { galleryAccessLimiter } from '../../middleware/rate-limit.js';
+import { validate } from '../../middleware/validate.js';
+import { badRequest, forbidden, unauthorized } from '../../utils/errors.js';
+import { asyncHandler, clientIp, created, ok, userAgent } from '../../utils/http.js';
+import { optionalText } from '../../utils/schemas.js';
+import { faceSearchEnabled, searchBySelfie } from '../ai/ai.service.js';
+import { auditCtx } from '../audit/audit.service.js';
+import { createOrder } from '../orders/orders.service.js';
+import { listGalleryPhotos, openGalleryPhoto } from '../photos/photos.service.js';
+import * as selections from '../selections/selections.service.js';
+import { getSetting } from '../settings/settings.service.js';
+import { gallerySession } from './gallery-session.js';
+import { accessWithToken, resolveAccess, scopeFilter } from './galleries.service.js';
+
+const router = Router();
+
+const gParams = z.object({ galleryId: z.coerce.number().int().positive() });
+const photoParams = gParams.extend({ photoId: z.coerce.number().int().positive() });
+const access = (req: Request) => resolveAccess(Number(req.params.galleryId), req.user, req.gallery);
+const requireUser = (req: Request) => {
+    if (!req.user) throw unauthorized('Sign in to continue. Your gallery stays open after signing in.');
+    return req.user;
+};
+
+router.post(
+    '/access',
+    galleryAccessLimiter,
+    optionalAuth,
+    validate(z.object({ token: z.string().trim().min(16).max(128).regex(/^[A-Za-z0-9_-]+$/, 'Invalid QR code') })),
+    asyncHandler(async (req, res) => {
+        ok(res, await accessWithToken(req.body.token, req.user, clientIp(req), userAgent(req)), 'Gallery unlocked');
+    }),
+);
+
+router.use('/:galleryId', optionalAuth, gallerySession(true));
+
+router.get(
+    '/:galleryId',
+    validate(gParams, 'params'),
+    asyncHandler(async (req, res) => {
+        const a = await access(req);
+        const scope = scopeFilter(a);
+        const [albums, categories, stats] = await Promise.all([
+            query(
+                `SELECT al.id, al.name, al.description, COUNT(p.id) AS photo_count FROM tblAlbum al
+                   LEFT JOIN tblPhoto p ON p.album_id = al.id AND p.deleted_at IS NULL AND p.is_rejected = 0 AND p.preview_key IS NOT NULL ${a.isStaff ? '' : 'AND p.is_published = 1'}
+                  WHERE al.gallery_id = ? AND al.deleted_at IS NULL ${a.scope === 'ALBUM' ? 'AND al.id = ?' : ''} GROUP BY al.id ORDER BY al.sort_order, al.id`,
+                a.scope === 'ALBUM' ? [a.gallery.id, a.albumId] : [a.gallery.id],
+            ),
+            query(
+                `SELECT m.category, COUNT(*) AS n FROM tblPhoto p JOIN tblPhotoMetadata m ON m.photo_id = p.id
+                  WHERE p.gallery_id = ? AND p.deleted_at IS NULL AND p.is_rejected = 0 ${a.isStaff ? '' : 'AND p.is_published = 1'} AND m.category IS NOT NULL${scope.sql} GROUP BY m.category`,
+                [a.gallery.id, ...scope.params],
+            ),
+            query(
+                `SELECT COUNT(*) AS photos, MAX(p.id) AS latest_id FROM tblPhoto p
+                  WHERE p.gallery_id = ? AND p.deleted_at IS NULL AND p.is_rejected = 0 AND p.preview_key IS NOT NULL ${a.isStaff ? '' : 'AND p.is_published = 1'}${scope.sql}`,
+                [a.gallery.id, ...scope.params],
+            ),
+        ]);
+        const pricing = await getSetting('pricing');
+        const studio = await getSetting('studio');
+        ok(res, {
+            id: a.gallery.id,
+            title: a.gallery.title,
+            description: a.gallery.description,
+            status: a.gallery.status,
+            eventId: a.gallery.event_id,
+            eventTitle: a.gallery.event_title,
+            eventDate: a.gallery.event_date,
+            eventStatus: a.gallery.event_status,
+            isLive: a.gallery.status === 'LIVE',
+            watermark: !!a.gallery.watermark_enabled,
+            allowDownload: !!a.gallery.allow_download,
+            expiresAt: a.gallery.expires_at,
+            scope: a.scope,
+            isOwner: a.isOwner,
+            isStaff: a.isStaff,
+            signedIn: !!req.user,
+            photoCount: Number(stats[0]?.photos ?? 0),
+            latestPhotoId: stats[0]?.latest_id ?? null,
+            albums,
+            categories,
+            faceSearch: await faceSearchEnabled(),
+            selection: await selections.mySelectionState(a, req.user),
+            pricing: {
+                photoDownload: a.gallery.photo_price ?? pricing.photoDownload,
+                prints: pricing.prints,
+                frames: pricing.frames,
+                canvas: pricing.canvas,
+                courierFee: pricing.courierFee,
+                currency: 'INR',
+            },
+            studio: { name: studio.name, phone: studio.phone, whatsapp: studio.whatsapp },
+        });
+    }),
+);
+
+router.get(
+    '/:galleryId/photos',
+    validate(gParams, 'params'),
+    validate(
+        z.object({
+            page: z.coerce.number().int().min(1).default(1),
+            pageSize: z.coerce.number().int().min(1).max(200).default(60),
+            albumId: z.coerce.number().int().positive().optional(),
+            view: z.enum(['all', 'favourites', 'selected', 'purchased']).default('all'),
+            category: z.enum(['SINGLE', 'COUPLE', 'FAMILY', 'GROUP', 'OTHER']).optional(),
+            tag: z.string().trim().max(40).optional(),
+            since: z.coerce.number().int().min(0).optional(),
+        }),
+        'query',
+    ),
+    asyncHandler(async (req, res) => {
+        ok(res, await listGalleryPhotos(await access(req), req.user, req.query as never));
+    }),
+);
+
+router.get(
+    '/:galleryId/photos/:photoId',
+    validate(photoParams, 'params'),
+    asyncHandler(async (req, res) => {
+        ok(res, await openGalleryPhoto(await access(req), req.user, Number(req.params.photoId), clientIp(req)));
+    }),
+);
+
+router.post(
+    '/:galleryId/photos/:photoId/favourite',
+    validate(photoParams, 'params'),
+    validate(z.object({ on: z.boolean() })),
+    asyncHandler(async (req, res) => {
+        const user = requireUser(req);
+        ok(res, await selections.toggleFavourite(await access(req), user, Number(req.params.photoId), req.body.on), req.body.on ? 'Added to favourites' : 'Removed from favourites');
+    }),
+);
+
+router.post(
+    '/:galleryId/photos/:photoId/select',
+    validate(photoParams, 'params'),
+    validate(z.object({ on: z.boolean() })),
+    asyncHandler(async (req, res) => {
+        const user = requireUser(req);
+        ok(res, await selections.toggleSelection(await access(req), user, Number(req.params.photoId), req.body.on), req.body.on ? 'Selected for album' : 'Removed from selection');
+    }),
+);
+
+router.post(
+    '/:galleryId/photos/:photoId/comments',
+    validate(photoParams, 'params'),
+    validate(z.object({ body: z.string().trim().min(1).max(1000) })),
+    asyncHandler(async (req, res) => {
+        const user = requireUser(req);
+        created(res, await selections.addComment(await access(req), user, Number(req.params.photoId), req.body.body, auditCtx(req)), 'Comment added');
+    }),
+);
+
+router.delete(
+    '/:galleryId/comments/:commentId',
+    validate(gParams.extend({ commentId: z.coerce.number().int().positive() }), 'params'),
+    asyncHandler(async (req, res) => {
+        await selections.deleteComment(requireUser(req), Number(req.params.commentId));
+        ok(res, null, 'Comment deleted');
+    }),
+);
+
+router.post(
+    '/:galleryId/selection/submit',
+    validate(gParams, 'params'),
+    validate(z.object({ note: optionalText(1000) })),
+    asyncHandler(async (req, res) => {
+        const user = requireUser(req);
+        const a = await access(req);
+        if (!a.isOwner) throw forbidden('Only the event owner can submit the album selection.');
+        ok(res, await selections.submitSelection(a.gallery.event_id, user, req.body.note ?? null, auditCtx(req)), 'Selection submitted to the studio');
+    }),
+);
+
+const address = z.object({
+    name: z.string().trim().min(2).max(120),
+    phone: z.string().trim().regex(/^[0-9+\-\s]{8,20}$/, 'Enter a valid phone number'),
+    line1: z.string().trim().min(3).max(200),
+    line2: optionalText(200),
+    city: z.string().trim().min(2).max(80),
+    state: z.string().trim().min(2).max(80),
+    pincode: z.string().trim().regex(/^\d{6}$/, 'Enter a 6-digit PIN code'),
+});
+
+router.post(
+    '/:galleryId/orders',
+    validate(gParams, 'params'),
+    validate(
+        z.object({
+            type: z.enum(['PHOTO_DOWNLOAD', 'PRINT', 'FRAME', 'CANVAS']),
+            photoIds: z.array(z.coerce.number().int().positive()).max(500).optional(),
+            items: z.array(z.object({ photoId: z.coerce.number().int().positive(), size: z.string().trim().min(1).max(30), quantity: z.coerce.number().int().min(1).max(50) })).max(100).optional(),
+            deliveryMethod: z.enum(['PICKUP', 'COURIER']).optional(),
+            shippingAddress: address.nullable().optional(),
+            couponCode: optionalText(40),
+            notes: optionalText(500),
+        }),
+    ),
+    asyncHandler(async (req, res) => {
+        const user = requireUser(req);
+        if (!user.customerId) throw forbidden('Sign in with a customer account to buy photos.');
+        created(res, await createOrder(req.body, user, await access(req), auditCtx(req)), 'Order created');
+    }),
+);
+
+router.post(
+    '/:galleryId/face-search',
+    validate(gParams, 'params'),
+    imageUpload.single('selfie'),
+    asyncHandler(async (req, res) => {
+        const a = await access(req);
+        if (!(await faceSearchEnabled())) throw badRequest('Face search is not enabled for this studio.');
+        if (!req.file) throw badRequest('Upload a clear selfie.', [{ field: 'selfie', message: 'Required' }]);
+        const ids = await searchBySelfie(a.gallery.event_id, req.file.buffer);
+        if (!ids.length) return ok(res, { items: [], total: 0, page: 1, pageSize: 200, totalPages: 0 }, 'No matching photos found. Try a clearer, front-facing selfie.');
+        ok(res, await listGalleryPhotos(a, req.user, { page: 1, pageSize: 200, ids }), 'Photos matched to your selfie');
+    }),
+);
+export default router;
