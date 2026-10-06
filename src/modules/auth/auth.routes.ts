@@ -1,3 +1,6 @@
+// Developer by: Buildnexdev.in
+// Devevloper : Nandhakumar@gmail.com
+// Last Edited : 06-10-2026
 // AUTHOR: NANDHAKUMAR
 // EDITED DATE: 2026-10-01
 import { Router, type CookieOptions, type Request, type Response } from 'express';

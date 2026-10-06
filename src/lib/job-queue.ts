@@ -1,3 +1,6 @@
+// Developer by: Buildnexdev.in
+// Devevloper : Nandhakumar@gmail.com
+// Last Edited : 06-10-2026
 /**
  * Small in-process job queue with bounded concurrency and retries.
  * Job state is persisted on the domain rows (e.g. photos.status), so pending work is re-queued at startup.

@@ -1,3 +1,6 @@
+// Developer by: Buildnexdev.in
+// Devevloper : Nandhakumar@gmail.com
+// Last Edited : 06-10-2026
 import { z } from 'zod';
 
 export const idParam = z.object({ id: z.coerce.number().int().positive() });

@@ -1,3 +1,6 @@
+// Developer by: Buildnexdev.in
+// Devevloper : Nandhakumar@gmail.com
+// Last Edited : 06-10-2026
 import type { PoolConnection } from 'mysql2/promise';
 import { execute, query, queryOne, withTransaction, type Db, pool } from '../../db/pool.js';
 import type { AuthUser } from '../../middleware/auth.js';

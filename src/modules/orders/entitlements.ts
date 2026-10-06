@@ -1,3 +1,6 @@
+// Developer by: Buildnexdev.in
+// Devevloper : Nandhakumar@gmail.com
+// Last Edited : 06-10-2026
 import { query, queryOne } from '../../db/pool.js';
 
 const PAID_ORDER = "('PAID','PROCESSING','READY','DELIVERED','COMPLETED')";

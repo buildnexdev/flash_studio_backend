@@ -1,3 +1,6 @@
+// Developer by: Buildnexdev.in
+// Devevloper : Nandhakumar@gmail.com
+// Last Edited : 06-10-2026
 import multer from 'multer';
 import { config } from '../config/env.js';
 import { ACCEPTED_MIME } from './images.js';

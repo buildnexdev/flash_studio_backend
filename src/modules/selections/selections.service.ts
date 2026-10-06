@@ -1,3 +1,6 @@
+// Developer by: Buildnexdev.in
+// Devevloper : Nandhakumar@gmail.com
+// Last Edited : 06-10-2026
 import { execute, query, queryOne } from '../../db/pool.js';
 import { storage } from '../../lib/storage.js';
 import { hasPermission, type AuthUser } from '../../middleware/auth.js';

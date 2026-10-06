@@ -1,3 +1,6 @@
+// Developer by: Buildnexdev.in
+// Devevloper : Nandhakumar@gmail.com
+// Last Edited : 06-10-2026
 import type { Request } from 'express';
 import { execute, json, query, queryOne } from '../../db/pool.js';
 import { clientIp, userAgent } from '../../utils/http.js';

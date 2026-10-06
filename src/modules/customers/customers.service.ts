@@ -1,12 +1,17 @@
-import { execute, query, queryOne, type Db, pool } from '../../db/pool.js';
+// Developer by: Buildnexdev.in
+// Devevloper : Nandhakumar@gmail.com
+// Last Edited : 06-10-2026 
+import { execute, query, queryOne, type Db, pool, withTransaction } from '../../db/pool.js';
 import { conflict, notFound } from '../../utils/errors.js';
 import { likeTerm, offsetOf, orderBy, paged, type PageQuery } from '../../utils/pagination.js';
 import { audit, type AuditContext } from '../audit/audit.service.js';
+import { hashPassword } from '../auth/auth.service.js';
 
 export interface CustomerInput {
     name: string;
     email?: string | null;
     phone?: string | null;
+    password?: string;
     address?: string | null;
     city?: string | null;
     state?: string | null;
@@ -71,16 +76,55 @@ export async function createCustomer(input: CustomerInput, ctx: AuditContext) {
         const dup = await queryOne('SELECT id FROM tblCustomer WHERE deleted_at IS NULL AND ((? IS NOT NULL AND email = ?) OR (? IS NOT NULL AND phone = ?))', [input.email ?? null, input.email ?? null, input.phone ?? null, input.phone ?? null]);
         if (dup) throw conflict('A customer with this email or phone already exists.');
     }
-    const id = await findOrCreateCustomer({ ...input, source: 'ADMIN' });
+    
+    let userId: number | null = null;
+    if (input.password && input.email) {
+        const dupUser = await queryOne('SELECT id FROM tblUser WHERE email = ?', [input.email]);
+        if (dupUser) throw conflict('A user with this email already exists.');
+        const hash = await hashPassword(input.password);
+        
+        const res = await execute('INSERT INTO tblUser (name, email, phone, password_hash, status, email_verified_at) VALUES (?, ?, ?, ?, ?, UTC_TIMESTAMP())', [input.name, input.email, input.phone ?? null, hash, 'ACTIVE']);
+        userId = res.insertId;
+        const roleRes = await queryOne<{ id: number }>('SELECT id FROM tblRole WHERE code = ?', ['CUSTOMER']);
+        if (roleRes) await execute('INSERT INTO tblUserRole (user_id, role_id) VALUES (?, ?)', [userId, roleRes.id]);
+    }
+    
+    const email = input.email?.toLowerCase() ?? null;
+    const res = await execute(
+        'INSERT INTO tblCustomer (name, email, phone, address, city, state, pincode, notes, source, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [input.name, email, input.phone ?? null, input.address ?? null, input.city ?? null, input.state ?? null, input.pincode ?? null, input.notes ?? null, 'ADMIN', userId]
+    );
+    const id = res.insertId;
+    
     await audit(ctx, 'CUSTOMER_CREATED', 'customers', id, { name: input.name });
     return getCustomer(id);
 }
 
 export async function updateCustomer(id: number, input: CustomerInput, ctx: AuditContext) {
-    await getCustomer(id);
+    const current = await getCustomer(id);
     const dup = await queryOne('SELECT id FROM tblCustomer WHERE deleted_at IS NULL AND id <> ? AND ((? IS NOT NULL AND email = ?) OR (? IS NOT NULL AND phone = ?))', [id, input.email ?? null, input.email ?? null, input.phone ?? null, input.phone ?? null]);
     if (dup) throw conflict('Another customer already uses this email or phone.');
-    await execute('UPDATE tblCustomer SET name = ?, email = ?, phone = ?, address = ?, city = ?, state = ?, pincode = ?, notes = ? WHERE id = ?', [
+    
+    let userId = current.user_id;
+    if (input.password && input.email) {
+        const hash = await hashPassword(input.password);
+        if (userId) {
+            await execute('UPDATE tblUser SET password_hash = ?, token_version = token_version + 1 WHERE id = ?', [hash, userId]);
+        } else {
+            const dupUser = await queryOne('SELECT id FROM tblUser WHERE email = ?', [input.email]);
+            if (dupUser) throw conflict('A user with this email already exists.');
+            const res = await execute('INSERT INTO tblUser (name, email, phone, password_hash, status, email_verified_at) VALUES (?, ?, ?, ?, ?, UTC_TIMESTAMP())', [input.name, input.email, input.phone ?? null, hash, 'ACTIVE']);
+            userId = res.insertId;
+            const roleRes = await queryOne<{ id: number }>('SELECT id FROM tblRole WHERE code = ?', ['CUSTOMER']);
+            if (roleRes) await execute('INSERT INTO tblUserRole (user_id, role_id) VALUES (?, ?)', [userId, roleRes.id]);
+        }
+    }
+    
+    if (userId) {
+        await execute('UPDATE tblUser SET name = ?, email = ?, phone = ? WHERE id = ?', [input.name, input.email, input.phone ?? null, userId]);
+    }
+    
+    await execute('UPDATE tblCustomer SET name = ?, email = ?, phone = ?, address = ?, city = ?, state = ?, pincode = ?, notes = ?, user_id = ? WHERE id = ?', [
         input.name,
         input.email?.toLowerCase() ?? null,
         input.phone ?? null,
@@ -89,6 +133,7 @@ export async function updateCustomer(id: number, input: CustomerInput, ctx: Audi
         input.state ?? null,
         input.pincode ?? null,
         input.notes ?? null,
+        userId,
         id,
     ]);
     await audit(ctx, 'CUSTOMER_UPDATED', 'customers', id);

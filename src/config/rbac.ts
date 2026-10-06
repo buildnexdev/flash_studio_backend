@@ -1,3 +1,6 @@
+// Developer by: Buildnexdev.in
+// Devevloper : Nandhakumar@gmail.com
+// Last Edited : 06-10-2026
 export const ROLES = [
     'SUPER_ADMIN',
     'STUDIO_OWNER',

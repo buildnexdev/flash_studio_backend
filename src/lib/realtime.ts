@@ -1,3 +1,6 @@
+// Developer by: Buildnexdev.in
+// Devevloper : Nandhakumar@gmail.com
+// Last Edited : 06-10-2026
 import type { Server as HttpServer } from 'node:http';
 import { Server, type Socket } from 'socket.io';
 import { config } from '../config/env.js';

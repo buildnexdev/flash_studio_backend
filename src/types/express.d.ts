@@ -1,3 +1,6 @@
+// Developer by: Buildnexdev.in
+// Devevloper : Nandhakumar@gmail.com
+// Last Edited : 06-10-2026
 import type { AuthUser } from '../middleware/auth.js';
 import type { GallerySession } from '../modules/galleries/gallery-session.js';
 

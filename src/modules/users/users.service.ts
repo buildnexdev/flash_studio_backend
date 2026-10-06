@@ -1,3 +1,6 @@
+// Developer by: Buildnexdev.in
+// Devevloper : Nandhakumar@gmail.com
+// Last Edited : 06-10-2026
 import { PERMISSIONS, ROLES, STAFF_ROLES, type Permission, type RoleCode } from '../../config/rbac.js';
 import { execute, query, queryOne, withTransaction } from '../../db/pool.js';
 import { invalidateUserCache } from '../../middleware/auth.js';

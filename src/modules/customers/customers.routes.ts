@@ -1,3 +1,6 @@
+// Developer by: Buildnexdev.in
+// Devevloper : Nandhakumar@gmail.com
+// Last Edited : 06-10-2026
 import { Router } from 'express';
 import { z } from 'zod';
 import { authenticate, requirePermission } from '../../middleware/auth.js';
@@ -11,8 +14,9 @@ import * as customers from './customers.service.js';
 export const customerBody = z
     .object({
         name: z.string().trim().min(2).max(120),
-        email: email.optional().nullable(),
+        email: email,
         phone: phone.optional().nullable(),
+        password: z.string().optional(),
         address: optionalText(255),
         city: optionalText(80),
         state: optionalText(80),

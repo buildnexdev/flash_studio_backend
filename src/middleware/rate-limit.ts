@@ -1,3 +1,6 @@
+// Developer by: Buildnexdev.in
+// Devevloper : Nandhakumar@gmail.com
+// Last Edited : 06-10-2026
 import rateLimit, { type Options } from 'express-rate-limit';
 import { config } from '../config/env.js';
 

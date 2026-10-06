@@ -1,3 +1,6 @@
+// Developer by: Buildnexdev.in
+// Devevloper : Nandhakumar@gmail.com
+// Last Edited : 06-10-2026
 import { execute, json, query, queryOne, withTransaction } from '../../db/pool.js';
 import { inspectImage, normalizeJpeg } from '../../lib/images.js';
 import { storage } from '../../lib/storage.js';

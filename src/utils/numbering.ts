@@ -1,3 +1,6 @@
+// Developer by: Buildnexdev.in
+// Devevloper : Nandhakumar@gmail.com
+// Last Edited : 06-10-2026
 import { randomInt } from 'node:crypto';
 import { queryOne, type Db, pool } from '../db/pool.js';
 

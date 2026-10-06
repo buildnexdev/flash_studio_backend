@@ -1,3 +1,6 @@
+// Developer by: Buildnexdev.in
+// Devevloper : Nandhakumar@gmail.com
+// Last Edited : 06-10-2026
 import QRCode from 'qrcode';
 
 const options = { errorCorrectionLevel: 'M' as const, margin: 2, color: { dark: '#0f172a', light: '#ffffff' } };

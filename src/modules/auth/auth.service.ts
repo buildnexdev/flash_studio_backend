@@ -1,3 +1,6 @@
+// Developer by: Buildnexdev.in
+// Devevloper : Nandhakumar@gmail.com
+// Last Edited : 06-10-2026
 import bcrypt from 'bcryptjs';
 import type { PoolConnection } from 'mysql2/promise';
 import { config } from '../../config/env.js';
