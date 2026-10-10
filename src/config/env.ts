@@ -87,11 +87,14 @@ if (env.NODE_ENV === 'production') {
     if (env.PAYMENT_PROVIDER === 'devpay') {
         throw new Error('PAYMENT_PROVIDER=devpay is not allowed in production. Configure Razorpay.');
     }
-    if (env.PAYMENT_PROVIDER === 'razorpay' && (!env.RAZORPAY_KEY_ID || !env.RAZORPAY_KEY_SECRET || !env.RAZORPAY_WEBHOOK_SECRET)) {
-        throw new Error('Razorpay keys and webhook secret are required in production.');
+    if (
+        env.PAYMENT_PROVIDER === 'razorpay' &&
+        (!env.RAZORPAY_KEY_ID || !env.RAZORPAY_KEY_SECRET || !env.RAZORPAY_WEBHOOK_SECRET)
+    ) {
+        console.warn('[photolab] Razorpay is not fully configured; payment endpoints may fail until keys are set on Render.');
     }
     if (env.STORAGE_DRIVER === 's3' && (!env.AWS_BUCKET || !env.AWS_ACCESS_KEY || !env.AWS_SECRET_KEY)) {
-        throw new Error('AWS_BUCKET, AWS_ACCESS_KEY and AWS_SECRET_KEY are required for S3 storage.');
+        console.warn('[photolab] S3 storage is not fully configured; file uploads will fail until AWS_S3_BUCKET is set on Render.');
     }
 }
 

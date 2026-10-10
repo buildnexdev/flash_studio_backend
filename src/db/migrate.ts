@@ -21,7 +21,19 @@ function splitUrl(url: string) {
 export async function runMigrations(options: { reset?: boolean; log?: boolean } = {}): Promise<string[]> {
     const { serverUrl, database } = splitUrl(config.DATABASE_URL);
     const log = options.log ?? true;
-    const server = await mysql.createConnection({ uri: serverUrl, multipleStatements: true });
+    const parsed = new URL(serverUrl);
+    const sslMode = parsed.searchParams.get('ssl-mode') ?? parsed.searchParams.get('sslMode');
+    parsed.searchParams.delete('ssl-mode');
+    parsed.searchParams.delete('sslMode');
+    const ssl =
+        sslMode && /required|verify/i.test(sslMode)
+            ? { rejectUnauthorized: true }
+            : undefined;
+    const server = await mysql.createConnection({
+        uri: parsed.toString(),
+        multipleStatements: true,
+        ...(ssl ? { ssl } : {}),
+    });
     try {
         if (options.reset) {
             if (config.isProd) throw new Error('Refusing to reset the database in production.');
@@ -43,7 +55,20 @@ export async function runMigrations(options: { reset?: boolean; log?: boolean } 
             if (applied.has(file)) continue;
             const sql = await readFile(path.join(migrationsDir, file), 'utf8');
             if (log) console.log(`[migrate] applying ${file}`);
-            await server.query(sql);
+            const statements = sql
+                .split(/;\s*(?:\r?\n|$)/)
+                .map((s) => s.trim())
+                .filter((s) => s && !s.startsWith('--'));
+            for (const statement of statements) {
+                try {
+                    await server.query(`${statement};`);
+                } catch (err) {
+                    const code = (err as { errno?: number }).errno;
+                    // Duplicate column / duplicate key — safe when re-running partial migrations
+                    if (code === 1060 || code === 1061) continue;
+                    throw err;
+                }
+            }
             await server.query('INSERT INTO tblSchemaMigration (name) VALUES (?)', [file]);
             ran.push(file);
         }

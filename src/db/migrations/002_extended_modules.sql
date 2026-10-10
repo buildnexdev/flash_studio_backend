@@ -237,12 +237,12 @@ CREATE TABLE IF NOT EXISTS tblSupportMessage (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Extend tblEvent with Security & Expiry columns if not existing
-ALTER TABLE tblEvent ADD COLUMN IF NOT EXISTS security_pin VARCHAR(100) NULL AFTER notes;
-ALTER TABLE tblEvent ADD COLUMN IF NOT EXISTS access_start_time DATETIME NULL AFTER security_pin;
-ALTER TABLE tblEvent ADD COLUMN IF NOT EXISTS access_end_time DATETIME NULL AFTER access_start_time;
-ALTER TABLE tblEvent ADD COLUMN IF NOT EXISTS download_mode ENUM('VIEW_ONLY','VIEW_AND_DOWNLOAD') NOT NULL DEFAULT 'VIEW_ONLY' AFTER access_end_time;
-ALTER TABLE tblEvent ADD COLUMN IF NOT EXISTS pin_attempts INT UNSIGNED NOT NULL DEFAULT 0 AFTER download_mode;
+ALTER TABLE tblEvent ADD COLUMN security_pin VARCHAR(100) NULL;
+ALTER TABLE tblEvent ADD COLUMN access_start_time DATETIME NULL;
+ALTER TABLE tblEvent ADD COLUMN access_end_time DATETIME NULL;
+ALTER TABLE tblEvent ADD COLUMN download_mode ENUM('VIEW_ONLY','VIEW_AND_DOWNLOAD') NOT NULL DEFAULT 'VIEW_ONLY';
+ALTER TABLE tblEvent ADD COLUMN pin_attempts INT UNSIGNED NOT NULL DEFAULT 0;
 
 -- Extend tblCustomer with referral_code if not existing
-ALTER TABLE tblCustomer ADD COLUMN IF NOT EXISTS referral_code VARCHAR(30) NULL AFTER pincode;
+ALTER TABLE tblCustomer ADD COLUMN referral_code VARCHAR(30) NULL;
 

@@ -4,8 +4,24 @@
 import mysql, { type Pool, type PoolConnection, type ResultSetHeader, type RowDataPacket } from 'mysql2/promise';
 import { config } from '../config/env.js';
 
+function poolOptions() {
+    const url = new URL(config.DATABASE_URL);
+    const sslMode = url.searchParams.get('ssl-mode') ?? url.searchParams.get('sslMode');
+    url.searchParams.delete('ssl-mode');
+    url.searchParams.delete('sslMode');
+    const uri = url.toString();
+    const ssl =
+        sslMode && /required|verify/i.test(sslMode)
+            ? { rejectUnauthorized: true }
+            : undefined;
+    return { uri, ssl };
+}
+
+const { uri, ssl } = poolOptions();
+
 export const pool: Pool = mysql.createPool({
-    uri: config.DATABASE_URL,
+    uri,
+    ...(ssl ? { ssl } : {}),
     connectionLimit: config.isTest ? 5 : 15,
     waitForConnections: true,
     timezone: 'Z',
