@@ -67,7 +67,15 @@ const schema = z.object({
     UPLOAD_CONCURRENCY: z.coerce.number().int().min(1).max(8).default(2),
 });
 
-const parsed = schema.safeParse(process.env);
+/** Accept common AWS / Render env names alongside our documented keys. */
+const envSource = {
+    ...process.env,
+    AWS_ACCESS_KEY: process.env.AWS_ACCESS_KEY || process.env.AWS_ACCESS_KEY_ID || '',
+    AWS_SECRET_KEY: process.env.AWS_SECRET_KEY || process.env.AWS_SECRET_ACCESS_KEY || '',
+    AWS_BUCKET: process.env.AWS_BUCKET || process.env.AWS_S3_BUCKET || '',
+};
+
+const parsed = schema.safeParse(envSource);
 if (!parsed.success) {
     const problems = parsed.error.issues.map((i) => `  - ${i.path.join('.')}: ${i.message}`).join('\n');
     throw new Error(`Invalid environment configuration:\n${problems}`);
