@@ -18,8 +18,8 @@ function splitUrl(url: string) {
     return { serverUrl: parsed.toString(), database };
 }
 
-export async function runMigrations(options: { reset?: boolean; log?: boolean } = {}): Promise<string[]> {
-    const { serverUrl, database } = splitUrl(config.DATABASE_URL);
+export async function runMigrations(options: { reset?: boolean; log?: boolean; databaseUrl?: string } = {}): Promise<string[]> {
+    const { serverUrl, database } = splitUrl(options.databaseUrl ?? config.DATABASE_URL);
     const log = options.log ?? true;
     const parsed = new URL(serverUrl);
     const sslMode = parsed.searchParams.get('ssl-mode') ?? parsed.searchParams.get('sslMode');

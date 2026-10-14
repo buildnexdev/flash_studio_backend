@@ -6,12 +6,15 @@
 import { Router, type CookieOptions, type Request, type Response } from 'express';
 import { z } from 'zod';
 import { config } from '../../config/env.js';
+import { platformDatabaseName, pool, runInTenant } from '../../db/pool.js';
 import { authenticate, serializeUser } from '../../middleware/auth.js';
+import { STUDIO_COOKIE } from '../../middleware/tenant.js';
 import { authLimiter, otpLimiter } from '../../middleware/rate-limit.js';
 import { validate } from '../../middleware/validate.js';
 import { asyncHandler, clientIp, ok, userAgent } from '../../utils/http.js';
 import { email, optionalText, password, phone } from '../../utils/schemas.js';
 import { auditCtx } from '../audit/audit.service.js';
+import { resolveTenant } from '../companies/companies.service.js';
 import * as auth from './auth.service.js';
 
 export const REFRESH_COOKIE = 'pl_rt';
@@ -28,7 +31,13 @@ const meta = (req: Request) => ({ ip: clientIp(req), userAgent: userAgent(req) }
 
 /** Browsers get the refresh token only as an httpOnly cookie; native apps (X-Client: mobile) receive it in the body. */
 function sendSession(req: Request, res: Response, session: Awaited<ReturnType<typeof auth.sessionPayload>>, status = 200) {
-    res.cookie(REFRESH_COOKIE, session.refreshToken, cookieOptions(new Date(session.refreshExpiresAt)));
+    const expires = new Date(session.refreshExpiresAt);
+    res.cookie(REFRESH_COOKIE, session.refreshToken, cookieOptions(expires));
+    if (session.studioSlug) {
+        res.cookie(STUDIO_COOKIE, session.studioSlug, { httpOnly: true, secure: config.isProd, sameSite: 'strict', path: '/api', expires });
+    } else {
+        res.clearCookie(STUDIO_COOKIE, { path: '/api' });
+    }
     const isMobile = req.headers['x-client'] === 'mobile';
     const { refreshToken, ...rest } = session;
     return res.status(status).json({ success: true, message: 'Signed in', data: isMobile ? session : rest });
@@ -59,10 +68,18 @@ router.post(
 router.post(
     '/login',
     authLimiter,
-    validate(z.object({ identifier: z.string().trim().min(3).max(190), password: z.string().min(1).max(200) })),
+    validate(z.object({ identifier: z.string().trim().min(3).max(190), password: z.string().min(1).max(200), studio: z.string().trim().max(80).optional() })),
     asyncHandler(async (req, res) => {
-        const session = await auth.login(req.body.identifier, req.body.password, meta(req), auditCtx(req));
-        sendSession(req, res, session);
+        const slug = (req.body.studio as string | undefined)?.trim().toLowerCase() ?? '';
+        const signIn = async () => {
+            const session = await auth.login(req.body.identifier, req.body.password, meta(req), auditCtx(req));
+            sendSession(req, res, session);
+        };
+        if (!slug) {
+            await runInTenant({ pool, database: platformDatabaseName(), slug: null }, signIn);
+            return;
+        }
+        await runInTenant(await resolveTenant(slug), signIn);
     }),
 );
 
@@ -86,6 +103,7 @@ router.post(
     asyncHandler(async (req, res) => {
         await auth.logout(readRefresh(req), auditCtx(req));
         res.clearCookie(REFRESH_COOKIE, cookieOptions());
+        res.clearCookie(STUDIO_COOKIE, { path: '/api' });
         ok(res, null, 'Signed out');
     }),
 );

@@ -5,7 +5,7 @@ import bcrypt from 'bcryptjs';
 import type { PoolConnection } from 'mysql2/promise';
 import { config } from '../../config/env.js';
 import { ROLE_HOME, type RoleCode } from '../../config/rbac.js';
-import { execute, query, queryOne, withTransaction, type Db, pool } from '../../db/pool.js';
+import { currentStudioSlug, execute, query, queryOne, withTransaction, type Db, pool } from '../../db/pool.js';
 import { invalidateUserCache, loadAuthUser, serializeUser, signAccessToken } from '../../middleware/auth.js';
 import { sendEmail, sendSms, sendWhatsApp } from '../../lib/channels.js';
 import { numericCode, randomToken, sha256, uuid } from '../../utils/crypto.js';
@@ -56,7 +56,7 @@ export async function issueTokens(userId: number, meta: SessionMeta, familyId = 
         [userId, familyId, sha256(refreshToken), toSqlDateTime(expires), meta.ip, meta.userAgent],
         db,
     );
-    return { accessToken: signAccessToken(userId, u?.token_version ?? 0), refreshToken, refreshExpiresAt: expires, refreshId: res.insertId };
+    return { accessToken: signAccessToken(userId, u?.token_version ?? 0, currentStudioSlug()), refreshToken, refreshExpiresAt: expires, refreshId: res.insertId };
 }
 
 export async function sessionPayload(userId: number, tokens: IssuedTokens) {
@@ -70,6 +70,7 @@ export async function sessionPayload(userId: number, tokens: IssuedTokens) {
         refreshToken: tokens.refreshToken,
         refreshExpiresAt: tokens.refreshExpiresAt.toISOString(),
         home: primary ? ROLE_HOME[primary] : '/',
+        studioSlug: currentStudioSlug(),
     };
 }
 

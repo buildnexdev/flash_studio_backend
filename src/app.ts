@@ -9,6 +9,7 @@ import helmet from 'helmet';
 import { config } from './config/env.js';
 import { pool } from './db/pool.js';
 import { errorHandler, notFoundHandler } from './middleware/error.js';
+import { bindTenant } from './middleware/tenant.js';
 import { apiLimiter } from './middleware/rate-limit.js';
 import { ok } from './utils/http.js';
 import aiRoutes from './modules/ai/ai.routes.js';
@@ -28,6 +29,7 @@ import publicRoutes from './modules/public/public.routes.js';
 import selectionRoutes from './modules/selections/selections.routes.js';
 import { auditRouter, notificationsRouter, portalRouter, reportsRouter, settingsRouter } from './modules/system/system.routes.js';
 import userRoutes from './modules/users/users.routes.js';
+import companyRoutes from './modules/companies/companies.routes.js';
 
 export function createApp() {
     const app = express();
@@ -45,7 +47,7 @@ export function createApp() {
         cors({
             origin: (origin, cb) => cb(null, !origin || config.corsOrigins.includes(origin)),
             credentials: true,
-            allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Gallery-Session', 'X-Client'],
+            allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Gallery-Session', 'X-Client', 'X-Studio-Slug'],
             maxAge: 600,
         }),
     );
@@ -72,12 +74,14 @@ export function createApp() {
         res.status(database === 'up' ? 200 : 503).json({ success: database === 'up', message: database === 'up' ? 'OK' : 'Database unavailable', data: { database, uptime: Math.round(process.uptime()) } });
     });
 
+    app.use(bindTenant);
     app.use('/api/files', fileRoutes);
     app.use('/api', apiLimiter);
 
     app.use('/api/auth', authRoutes);
     app.use('/api/public', publicRoutes);
     app.use('/api/gallery', publicGalleryRoutes);
+    app.use('/api/companies', companyRoutes);
     app.use('/api/users', userRoutes);
     app.use('/api/customers', customerRoutes);
     app.use('/api/catalog', catalogRoutes);

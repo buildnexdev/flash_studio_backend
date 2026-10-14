@@ -5,7 +5,7 @@ import type { NextFunction, Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
 import { config } from '../config/env.js';
 import type { Permission, RoleCode } from '../config/rbac.js';
-import { query, queryOne } from '../db/pool.js';
+import { currentDatabaseKey, query, queryOne } from '../db/pool.js';
 import { forbidden, unauthorized } from '../utils/errors.js';
 
 export interface AuthUser {
@@ -23,18 +23,21 @@ interface AccessPayload {
     sub: string;
     tv: number;
     typ: 'access';
+    sid?: string;
 }
 
 const CACHE_TTL_MS = 30_000;
-const cache = new Map<number, { user: AuthUser; expires: number }>();
+const cache = new Map<string, { user: AuthUser; expires: number }>();
+const userCacheKey = (userId: number) => `${currentDatabaseKey()}:${userId}`;
 
 export function invalidateUserCache(userId?: number): void {
     if (userId === undefined) cache.clear();
-    else cache.delete(userId);
+    else cache.delete(userCacheKey(userId));
 }
 
 export async function loadAuthUser(userId: number): Promise<AuthUser | null> {
-    const hit = cache.get(userId);
+    const key = userCacheKey(userId);
+    const hit = cache.get(key);
     if (hit && hit.expires > Date.now()) return hit.user;
 
     const row = await queryOne<{ id: number; name: string; email: string | null; phone: string | null; status: string; token_version: number; customer_id: number | null }>(
@@ -64,12 +67,12 @@ export async function loadAuthUser(userId: number): Promise<AuthUser | null> {
         customerId: row.customer_id,
         tokenVersion: row.token_version,
     };
-    cache.set(userId, { user, expires: Date.now() + CACHE_TTL_MS });
+    cache.set(key, { user, expires: Date.now() + CACHE_TTL_MS });
     return user;
 }
 
-export function signAccessToken(userId: number, tokenVersion: number): string {
-    const payload: AccessPayload = { sub: String(userId), tv: tokenVersion, typ: 'access' };
+export function signAccessToken(userId: number, tokenVersion: number, studioSlug?: string | null): string {
+    const payload: AccessPayload = { sub: String(userId), tv: tokenVersion, typ: 'access', ...(studioSlug ? { sid: studioSlug } : {}) };
     return jwt.sign(payload, config.JWT_SECRET, { expiresIn: config.ACCESS_TOKEN_TTL as jwt.SignOptions['expiresIn'], issuer: 'photolab' });
 }
 

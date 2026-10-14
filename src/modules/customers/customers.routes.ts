@@ -7,14 +7,24 @@ import { authenticate, requirePermission } from '../../middleware/auth.js';
 import { validate } from '../../middleware/validate.js';
 import { asyncHandler, created, ok } from '../../utils/http.js';
 import { pageQuery, type PageQuery } from '../../utils/pagination.js';
-import { email, idParam, optionalText, phone } from '../../utils/schemas.js';
+import { idParam, optionalText, phone } from '../../utils/schemas.js';
 import { auditCtx } from '../audit/audit.service.js';
 import * as customers from './customers.service.js';
+
+const optionalEmail = z
+    .string()
+    .trim()
+    .toLowerCase()
+    .max(190)
+    .refine((v) => v === '' || z.string().email().safeParse(v).success, 'Enter a valid email')
+    .optional()
+    .nullable()
+    .transform((v) => (v ? v : null));
 
 export const customerBody = z
     .object({
         name: z.string().trim().min(2).max(120),
-        email: email,
+        email: optionalEmail,
         phone: phone.optional().nullable(),
         password: z.string().optional(),
         address: optionalText(255),
@@ -48,7 +58,7 @@ router.get(
 
 router.post(
     '/',
-    requirePermission('customers.manage'),
+    requirePermission('customers.manage', 'events.manage', 'bookings.manage'),
     validate(customerBody),
     asyncHandler(async (req, res) => {
         created(res, await customers.createCustomer(req.body, auditCtx(req)), 'Customer created');

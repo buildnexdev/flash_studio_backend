@@ -11,6 +11,7 @@ import { likeTerm, offsetOf, orderBy, paged } from '../../utils/pagination.js';
 import { toSqlDateTime } from '../../utils/dates.js';
 import { audit, type AuditContext } from '../audit/audit.service.js';
 import { notifyCustomer, notifyUser } from '../notifications/notifications.service.js';
+import { ensureEventQr } from '../galleries/galleries.service.js';
 import { getSetting } from '../settings/settings.service.js';
 
 export const EVENT_STATUSES = ['UPCOMING', 'LIVE', 'UPLOADING', 'PROCESSING', 'COMPLETED', 'CANCELLED'] as const;
@@ -252,6 +253,7 @@ export async function transitionEvent(id: number, action: EventAction, actor: Au
         }
     });
 
+    if (action === 'start') await ensureEventQr(id, ctx);
     await audit(ctx, `EVENT_${action.toUpperCase()}`, 'events', id, { from: e.status, to: t.to });
     emitTo(rooms.event(id), 'event:status', { eventId: id, status: t.to });
     if (action === 'start') {

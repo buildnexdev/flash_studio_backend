@@ -5,8 +5,9 @@ import bcrypt from 'bcryptjs';
 import { pathToFileURL } from 'node:url';
 import { config } from '../config/env.js';
 import { PERMISSIONS, ROLE_LABELS, ROLE_PERMISSIONS, ROLES, type RoleCode } from '../config/rbac.js';
-import { DEFAULT_SETTINGS } from '../modules/settings/settings.service.js';
-import { closePool, execute, json, query, queryOne } from './pool.js';
+import { FLASH_PACKAGES, FLASH_PORTFOLIO, FLASH_SERVICES, FLASH_SLUG, FLASH_STUDIO, FLASH_TESTIMONIALS, FLASH_WEBSITE } from './flashlight-content.js';
+import { DEFAULT_SETTINGS, clearSettingsCache } from '../modules/settings/settings.service.js';
+import { closePool, execute, json, platformDatabaseName, query, queryOne } from './pool.js';
 
 /** Default password for the non-production test accounts (override with SEED_PASSWORD). */
 export const TEST_PASSWORD = process.env.SEED_PASSWORD || 'PhotoLab@2026';
@@ -23,7 +24,7 @@ export const TEST_USERS: { role: RoleCode; name: string; email: string; phone: s
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 
-async function seedRbac(resetPermissions: boolean) {
+export async function seedRbac(resetPermissions: boolean) {
     for (const [code, [module, description]] of Object.entries(PERMISSIONS)) {
         await execute('INSERT INTO tblPermission (code, module, description) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE module = VALUES(module), description = VALUES(description)', [code, module, description]);
     }
@@ -42,7 +43,7 @@ async function seedRbac(resetPermissions: boolean) {
     }
 }
 
-async function ensureUser(u: { role: RoleCode; name: string; email: string; phone: string | null }, password: string): Promise<number> {
+export async function ensureUser(u: { role: RoleCode; name: string; email: string; phone: string | null }, password: string): Promise<number> {
     const existing = await queryOne<{ id: number; password_hash: string | null }>('SELECT id, password_hash FROM tblUser WHERE email = ?', [u.email]);
     let userId: number;
     if (existing) {
@@ -68,7 +69,7 @@ async function ensureUser(u: { role: RoleCode; name: string; email: string; phon
     return userId;
 }
 
-async function seedCatalog() {
+export async function seedCatalog() {
     const has = await queryOne<{ n: number }>('SELECT COUNT(*) AS n FROM tblService');
     if ((has?.n ?? 0) > 0) return false;
     const services = [
@@ -101,10 +102,83 @@ async function seedCatalog() {
     return true;
 }
 
-async function seedSettings() {
+export async function seedSettings() {
     for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) {
-        await execute('INSERT IGNORE INTO tblSetting (`key`, value, is_public) VALUES (?, ?, ?)', [key, json(value), key === 'studio' ? 1 : 0]);
+        await execute('INSERT IGNORE INTO tblSetting (`key`, value, is_public) VALUES (?, ?, ?)', [key, json(value), key === 'studio' || key === 'website' ? 1 : 0]);
     }
+}
+
+const PLACEHOLDER_NAMES = new Set(['', 'BuildNexDev Studio', 'PhotoLab Studio']);
+
+/** Register FlashLight Photography on the current database and store its website copy. */
+export async function ensureFlashStudio(): Promise<{ seeded: boolean; slug: string; database: string }> {
+    const database = platformDatabaseName();
+    const existing = await queryOne<{ id: number }>('SELECT id FROM tblCompany WHERE slug = ?', [FLASH_SLUG]);
+    if (!existing) {
+        await execute(
+            `INSERT INTO tblCompany (name, slug, database_name, status, email, phone, city, owner_name, is_primary)
+             VALUES (?, ?, ?, 'ACTIVE', ?, ?, ?, ?, 1)`,
+            [FLASH_STUDIO.name, FLASH_SLUG, database, FLASH_STUDIO.email, FLASH_STUDIO.phone, FLASH_STUDIO.city, FLASH_STUDIO.name],
+        );
+    }
+
+    const studioRow = await queryOne<{ value: unknown }>('SELECT value FROM tblSetting WHERE `key` = ?', ['studio']);
+    const websiteRow = await queryOne<{ value: unknown }>('SELECT value FROM tblSetting WHERE `key` = ?', ['website']);
+    const read = (value: unknown) => (typeof value === 'string' ? JSON.parse(value) : value) as { name?: string; historyText?: string } | null;
+    const studio = read(studioRow?.value);
+    const website = read(websiteRow?.value);
+    const placeholder = !studio?.name || PLACEHOLDER_NAMES.has(studio.name) || (website?.historyText ?? '').includes('PhotoLab Studio');
+    if (!placeholder) return { seeded: false, slug: FLASH_SLUG, database };
+
+    await execute(
+        'INSERT INTO tblSetting (`key`, value, is_public) VALUES (?, ?, 1) ON DUPLICATE KEY UPDATE value = VALUES(value), is_public = 1',
+        ['studio', json(FLASH_STUDIO)],
+    );
+    await execute(
+        'INSERT INTO tblSetting (`key`, value, is_public) VALUES (?, ?, 1) ON DUPLICATE KEY UPDATE value = VALUES(value), is_public = 1',
+        ['website', json(FLASH_WEBSITE)],
+    );
+    await execute(
+        'INSERT INTO tblSetting (`key`, value, is_public) VALUES (?, ?, 0) ON DUPLICATE KEY UPDATE value = VALUES(value)',
+        ['gallery', json({ ...DEFAULT_SETTINGS.gallery, watermarkText: FLASH_STUDIO.name })],
+    );
+
+    const serviceSlugs = FLASH_SERVICES.map((s) => s.slug);
+    await execute('UPDATE tblService SET is_active = 0 WHERE deleted_at IS NULL AND slug NOT IN (?)', [serviceSlugs]);
+    for (const s of FLASH_SERVICES) {
+        await execute(
+            `INSERT INTO tblService (name, slug, summary, description, icon, base_price, is_active, sort_order)
+             VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+             ON DUPLICATE KEY UPDATE name = VALUES(name), summary = VALUES(summary), description = VALUES(description), icon = VALUES(icon), base_price = VALUES(base_price), is_active = 1, sort_order = VALUES(sort_order), deleted_at = NULL`,
+            [s.name, s.slug, s.summary, s.description, s.icon, s.base, s.sort],
+        );
+    }
+    const packageSlugs = FLASH_PACKAGES.map((p) => p.slug);
+    await execute('UPDATE tblPackage SET is_active = 0 WHERE deleted_at IS NULL AND slug NOT IN (?)', [packageSlugs]);
+    for (const p of FLASH_PACKAGES) {
+        const service = await queryOne<{ id: number }>('SELECT id FROM tblService WHERE slug = ?', [p.serviceSlug]);
+        await execute(
+            `INSERT INTO tblPackage (service_id, name, slug, description, price, advance_percent, features, photo_count, includes_digital, includes_album, duration_hours, is_featured, is_active, sort_order)
+             VALUES (?, ?, ?, ?, ?, 30, ?, ?, ?, ?, ?, ?, 1, ?)
+             ON DUPLICATE KEY UPDATE service_id = VALUES(service_id), name = VALUES(name), description = VALUES(description), price = VALUES(price), features = VALUES(features), photo_count = VALUES(photo_count), includes_digital = VALUES(includes_digital), includes_album = VALUES(includes_album), duration_hours = VALUES(duration_hours), is_featured = VALUES(is_featured), is_active = 1, sort_order = VALUES(sort_order), deleted_at = NULL`,
+            [service?.id ?? null, p.name, p.slug, p.description, p.price, json(p.features), p.photos, p.digital ? 1 : 0, p.album ? 1 : 0, p.hours, p.featured ? 1 : 0, p.sort],
+        );
+    }
+    await execute('UPDATE tblTestimonial SET deleted_at = UTC_TIMESTAMP(), is_published = 0 WHERE deleted_at IS NULL');
+    for (const t of FLASH_TESTIMONIALS) {
+        await execute('INSERT INTO tblTestimonial (name, event_label, quote, rating, is_published, sort_order) VALUES (?, ?, ?, ?, 1, ?)', [t.name, t.event, t.quote, t.rating, t.sort]);
+    }
+    for (const item of FLASH_PORTFOLIO) {
+        const found = await queryOne('SELECT id FROM tblPortfolioItem WHERE title = ? AND deleted_at IS NULL', [item.title]);
+        if (found) continue;
+        await execute(
+            'INSERT INTO tblPortfolioItem (title, category, description, image_key, is_featured, sort_order) VALUES (?, ?, ?, ?, ?, ?)',
+            [item.title, item.category, item.description, item.image, item.featured ? 1 : 0, item.sort],
+        );
+    }
+    await execute("INSERT IGNORE INTO tblCoupon (code, description, type, value, min_amount, max_discount, applies_to) VALUES ('WELCOME10', '10% off photo orders', 'PERCENT', 10, 0, 50000, 'ORDER')");
+    clearSettingsCache();
+    return { seeded: true, slug: FLASH_SLUG, database };
 }
 
 export async function runSeed(opts: { resetPermissions?: boolean; log?: boolean } = {}) {
@@ -112,6 +186,14 @@ export async function runSeed(opts: { resetPermissions?: boolean; log?: boolean 
     await seedRbac(!!opts.resetPermissions);
     await seedSettings();
     const catalog = await seedCatalog();
+    const flash = await ensureFlashStudio().catch((err: { errno?: number; message?: string }) => {
+        if (err.errno === 1146) {
+            if (log) console.log('[seed] skip flash studio until migration 003_companies.sql is applied');
+            return null;
+        }
+        throw err;
+    });
+    if (log && flash?.seeded) console.log(`[seed] FlashLight Photography content saved in ${flash.database}`);
 
     if (config.isProd) {
         const email = process.env.SEED_ADMIN_EMAIL;

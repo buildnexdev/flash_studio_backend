@@ -34,7 +34,7 @@ describe('booking-to-delivery workflow', () => {
 
     it('1. receives a website enquiry for a package', async () => {
         const packages = await api().get('/api/public/packages');
-        const gold = packages.body.data.find((p: { name: string }) => p.name === 'Wedding Gold');
+        const gold = packages.body.data.find((p: { name: string }) => p.name === 'Wedding Gold Collection');
         expect(gold.includes_digital).toBe(1);
         const res = await api()
             .post('/api/public/enquiry')

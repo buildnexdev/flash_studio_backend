@@ -1,7 +1,7 @@
 // Developer by: Buildnexdev.in
 // Devevloper : Nandhakumar@gmail.com
 // Last Edited : 06-10-2026
-import { execute, json, query, queryOne, pool } from '../../db/pool.js';
+import { execute, json, query, queryOne, pool, type Row } from '../../db/pool.js';
 import { badRequest, notFound } from '../../utils/errors.js';
 import { audit, type AuditContext } from '../audit/audit.service.js';
 
@@ -170,7 +170,7 @@ export async function getOrCreateCart(customerId?: number | null, sessionId?: st
 }
 
 export async function getCartDetails(cartId: number) {
-    const items = await query<Record<string, unknown>[]>(
+    const items = await query<Row>(
         `SELECT ci.*, p.name AS product_name, p.sku, p.images, p.price AS product_price, p.discount_price, v.name AS variant_name
          FROM tblCartItem ci
          JOIN tblProduct p ON p.id = ci.product_id
@@ -182,10 +182,12 @@ export async function getCartDetails(cartId: number) {
     let subtotal = 0;
     const processedItems = items.map((item) => {
         const unitPrice = (item.discount_price as number) || (item.product_price as number);
-        const itemTotal = unitPrice * (item.quantity as number);
+        const quantity = (item.quantity as number) || 0;
+        const itemTotal = unitPrice * quantity;
         subtotal += itemTotal;
         return {
-            ...item,
+            ...(item as Record<string, any>),
+            quantity,
             unit_price: unitPrice,
             total_price: itemTotal,
         };

@@ -161,6 +161,22 @@ async function listTokens(galleryId: number) {
     });
 }
 
+/** Issue the guest QR when an event goes live, if one is not already active. */
+export async function ensureEventQr(eventId: number, ctx: AuditContext) {
+    const g = await queryOne<{ id: number }>('SELECT id FROM tblGallery WHERE event_id = ? AND deleted_at IS NULL ORDER BY id LIMIT 1', [eventId]);
+    if (!g) return null;
+    const existing = await queryOne(
+        `SELECT id FROM tblGalleryToken
+          WHERE gallery_id = ? AND scope = 'EVENT' AND revoked_at IS NULL
+            AND (expires_at IS NULL OR expires_at > UTC_TIMESTAMP())
+            AND (max_uses IS NULL OR use_count < max_uses)
+          LIMIT 1`,
+        [g.id],
+    );
+    if (existing) return existing;
+    return generateQr(g.id, { scope: 'EVENT', label: 'Live event' }, ctx);
+}
+
 export async function generateQr(galleryId: number, input: TokenInput, ctx: AuditContext) {
     const g = await loadGallery(galleryId);
     if (input.scope === 'ALBUM') {

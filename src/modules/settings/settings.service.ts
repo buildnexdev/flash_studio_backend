@@ -2,7 +2,7 @@
 // Devevloper : Nandhakumar@gmail.com
 // Last Edited : 06-10-2026
 import { z } from 'zod';
-import { execute, json, query } from '../../db/pool.js';
+import { currentDatabaseKey, execute, json, query } from '../../db/pool.js';
 
 export const settingSchemas = {
     studio: z.object({
@@ -66,14 +66,30 @@ export const settingSchemas = {
                     id: z.string(),
                     title: z.string(),
                     subtitle: z.string(),
-                    imageUrl: z.string(),
-                    tag: z.string(),
+                    imageUrl: z.string().optional().default(''),
+                    image: z.string().optional().default(''),
+                    tag: z.string().optional().default(''),
+                    highlightText: z.string().optional().default(''),
                     lens: z.string().optional(),
                     shutter: z.string().optional(),
                     iso: z.string().optional(),
                 }),
             )
             .optional(),
+        products: z
+            .array(
+                z.object({
+                    id: z.string(),
+                    name: z.string(),
+                    category: z.string(),
+                    price: z.number().int().min(0),
+                    description: z.string().default(''),
+                    features: z.array(z.string()).default([]),
+                    image: z.string().optional().default(''),
+                }),
+            )
+            .optional()
+            .default([]),
     }),
 };
 
@@ -123,12 +139,15 @@ export const DEFAULT_SETTINGS: Settings = {
             'Dedicated Lead Photographers & Master Retouchers',
             'Transparent All-Inclusive Pricing & Timely Delivery',
         ],
+        products: [],
         slides: [
             {
                 id: '1',
                 title: 'Timeless Wedding & Milestone Imagery',
                 subtitle: 'Authentic emotion, master framing, and effortless digital delivery for your big day.',
                 imageUrl: 'https://images.unsplash.com/photo-1519741497674-611481863552?auto=format&fit=crop&w=2000&q=85',
+                image: 'https://images.unsplash.com/photo-1519741497674-611481863552?auto=format&fit=crop&w=2000&q=85',
+                highlightText: '',
                 tag: 'Wedding & Grand Celebrations',
                 lens: '85mm f/1.4 GM',
                 shutter: '1/800s',
@@ -139,6 +158,8 @@ export const DEFAULT_SETTINGS: Settings = {
                 title: 'Birthdays & Intimate Ceremonies',
                 subtitle: 'Preserving laughter, candlelit milestones, and candid family bonds with editorial warmth.',
                 imageUrl: 'https://images.unsplash.com/photo-1511285560929-80b456fea0bc?auto=format&fit=crop&w=2000&q=85',
+                image: 'https://images.unsplash.com/photo-1511285560929-80b456fea0bc?auto=format&fit=crop&w=2000&q=85',
+                highlightText: '',
                 tag: 'Birthdays & Housewarming',
                 lens: '35mm f/1.4 Art',
                 shutter: '1/500s',
@@ -150,9 +171,11 @@ export const DEFAULT_SETTINGS: Settings = {
 
 export const PUBLIC_SETTING_KEYS: SettingKey[] = ['studio', 'website'];
 
-let cache: { value: Settings; expires: number } | null = null;
+const caches = new Map<string, { value: Settings; expires: number }>();
 
 export async function getSettings(): Promise<Settings> {
+    const cacheKey = currentDatabaseKey();
+    const cache = caches.get(cacheKey);
     if (cache && cache.expires > Date.now()) return cache.value;
     const rows = await query<{ key: SettingKey; value: unknown }>('SELECT `key`, value FROM tblSetting');
     const merged = structuredClone(DEFAULT_SETTINGS) as Record<SettingKey, unknown>;
@@ -162,7 +185,7 @@ export async function getSettings(): Promise<Settings> {
             merged[row.key] = { ...(merged[row.key] as object), ...(value as object) };
         }
     }
-    cache = { value: merged as Settings, expires: Date.now() + 15_000 };
+    caches.set(cacheKey, { value: merged as Settings, expires: Date.now() + 15_000 });
     return merged as Settings;
 }
 
@@ -176,10 +199,10 @@ export async function updateSetting<K extends SettingKey>(key: K, value: unknown
         'INSERT INTO tblSetting (`key`, value, is_public, updated_by) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE value = VALUES(value), updated_by = VALUES(updated_by)',
         [key, json(parsed), PUBLIC_SETTING_KEYS.includes(key) ? 1 : 0, userId],
     );
-    cache = null;
+    caches.delete(currentDatabaseKey());
     return parsed;
 }
 
 export function clearSettingsCache(): void {
-    cache = null;
+    caches.clear();
 }

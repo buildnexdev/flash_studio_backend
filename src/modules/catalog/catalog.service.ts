@@ -195,7 +195,7 @@ export async function evaluateCoupon(codeRaw: string, amount: number, scope: 'OR
 /* ---------------- Portfolio & testimonials ---------------- */
 
 export const listPortfolio = (category?: string) =>
-    query(`SELECT id, title, category, description, is_featured, sort_order, created_at FROM tblPortfolioItem WHERE deleted_at IS NULL ${category ? 'AND category = ?' : ''} ORDER BY is_featured DESC, sort_order, id DESC`, category ? [category] : []);
+    query(`SELECT id, title, category, description, image_key, is_featured, sort_order, created_at FROM tblPortfolioItem WHERE deleted_at IS NULL ${category ? 'AND category = ?' : ''} ORDER BY is_featured DESC, sort_order, id DESC`, category ? [category] : []);
 
 export async function addPortfolioItem(file: Buffer, input: { title: string; category: string; description?: string | null; isFeatured: boolean }, ctx: AuditContext) {
     try {
@@ -219,13 +219,16 @@ export async function deletePortfolioItem(id: number, ctx: AuditContext) {
     const row = await queryOne<{ image_key: string }>('SELECT image_key FROM tblPortfolioItem WHERE id = ?', [id]);
     if (!row) throw notFound('Portfolio item');
     await execute('UPDATE tblPortfolioItem SET deleted_at = UTC_TIMESTAMP() WHERE id = ?', [id]);
-    await storage.delete(row.image_key).catch(() => undefined);
+    if (!row.image_key.startsWith('/') && !row.image_key.startsWith('http://') && !row.image_key.startsWith('https://')) {
+        await storage.delete(row.image_key).catch(() => undefined);
+    }
     await audit(ctx, 'PORTFOLIO_DELETED', 'website', id);
 }
 
 export async function portfolioImageUrl(id: number): Promise<string> {
     const row = await queryOne<{ image_key: string }>('SELECT image_key FROM tblPortfolioItem WHERE id = ? AND deleted_at IS NULL', [id]);
     if (!row) throw notFound('Image');
+    if (row.image_key.startsWith('http://') || row.image_key.startsWith('https://') || row.image_key.startsWith('/')) return row.image_key;
     return storage.signedUrl(row.image_key, { ttlSeconds: 3600 });
 }
 

@@ -18,7 +18,22 @@ import { getSetting } from '../settings/settings.service.js';
 
 const router = Router();
 
-const withImage = (rows: Record<string, unknown>[]) => rows.map((r) => ({ ...r, image_url: `/api/public/portfolio/${String(r.id)}/image` }));
+const publicImage = (row: { id: unknown; image_key?: string | null }) => {
+    const key = row.image_key ?? '';
+    if (key.startsWith('http://') || key.startsWith('https://') || key.startsWith('/')) return key;
+    return `/api/public/portfolio/${String(row.id)}/image`;
+};
+
+const withImage = (rows: Record<string, unknown>[]) =>
+    rows.map(({ image_key, ...rest }) => ({
+        ...rest,
+        image_url: publicImage({ id: rest.id, image_key: typeof image_key === 'string' ? image_key : null }),
+    }));
+
+const forWebsite = (website: Awaited<ReturnType<typeof getSetting<'website'>>>) => ({
+    ...website,
+    slides: (website.slides ?? []).map((slide) => ({ ...slide, image: slide.image || slide.imageUrl || '' })),
+});
 
 router.get(
     '/site',
@@ -36,7 +51,7 @@ router.get(
                         (SELECT COUNT(*) FROM tblPhoto WHERE deleted_at IS NULL AND is_published = 1) AS photos`,
             ),
         ]);
-        ok(res, { studio, website, services, packages, portfolio: withImage(portfolio.slice(0, 12)), testimonials: testimonials.slice(0, 9), stats });
+        ok(res, { studio, website: forWebsite(website), services, packages, portfolio: withImage(portfolio.slice(0, 12)), testimonials: testimonials.slice(0, 9), stats });
     }),
 );
 

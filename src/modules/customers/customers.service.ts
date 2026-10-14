@@ -1,7 +1,7 @@
 // Developer by: Buildnexdev.in
 // Devevloper : Nandhakumar@gmail.com
 // Last Edited : 06-10-2026 
-import { execute, query, queryOne, type Db, pool, withTransaction } from '../../db/pool.js';
+import { execute, query, queryOne, type Db, type Row, pool, withTransaction } from '../../db/pool.js';
 import { conflict, notFound } from '../../utils/errors.js';
 import { likeTerm, offsetOf, orderBy, paged, type PageQuery } from '../../utils/pagination.js';
 import { audit, type AuditContext } from '../audit/audit.service.js';
@@ -42,7 +42,7 @@ export async function listCustomers(q: PageQuery) {
     return paged(items, total, q);
 }
 
-export async function getCustomer(id: number) {
+export async function getCustomer(id: number): Promise<Row & { bookings: Row[]; events: Row[]; orders: Row[]; payments: Row[] }> {
     const c = await queryOne('SELECT * FROM tblCustomer WHERE id = ? AND deleted_at IS NULL', [id]);
     if (!c) throw notFound('Customer');
     const [bookings, events, orders, payments] = await Promise.all([
@@ -51,7 +51,12 @@ export async function getCustomer(id: number) {
         query('SELECT id, order_no, type, status, total, created_at FROM tblOrder WHERE customer_id = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT 50', [id]),
         query('SELECT id, payment_no, purpose, amount, status, method, paid_at, created_at FROM tblPayment WHERE customer_id = ? ORDER BY id DESC LIMIT 50', [id]),
     ]);
-    return { ...c, bookings, events, orders, payments };
+    return { ...c, bookings, events, orders, payments } as Row & {
+        bookings: Row[];
+        events: Row[];
+        orders: Row[];
+        payments: Row[];
+    };
 }
 
 /** Find a customer by email/phone or create one (used by public enquiries and admin bookings). */

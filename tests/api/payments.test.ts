@@ -15,7 +15,7 @@ async function packageOrder(token: string) {
 beforeAll(async () => {
     admin = await login('admin@photolab.test');
     const pkgs = (await api().get('/api/public/packages')).body.data as { id: number; name: string; price: number }[];
-    const p = pkgs.find((x) => x.name === 'Studio Portrait')!;
+    const p = (pkgs.find((x) => x.name === 'Wedding Silver Collection') ?? pkgs[0])!;
     packageId = p.id;
     packagePrice = Number(p.price);
 });
