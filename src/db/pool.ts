@@ -19,7 +19,7 @@ function connectionParts(databaseUrl: string) {
     url.searchParams.delete('ssl-mode');
     url.searchParams.delete('sslMode');
     const database = decodeURIComponent(url.pathname.replace(/^\//, ''));
-    const ssl = sslMode && /required|verify/i.test(sslMode) ? { rejectUnauthorized: true } : undefined;
+    const ssl = sslMode && /required|verify/i.test(sslMode) ? { rejectUnauthorized: false } : undefined;
     return { uri: url.toString(), ssl, database };
 }
 

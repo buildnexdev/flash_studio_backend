@@ -27,7 +27,7 @@ export async function runMigrations(options: { reset?: boolean; log?: boolean; d
     parsed.searchParams.delete('sslMode');
     const ssl =
         sslMode && /required|verify/i.test(sslMode)
-            ? { rejectUnauthorized: true }
+            ? { rejectUnauthorized: false }
             : undefined;
     const server = await mysql.createConnection({
         uri: parsed.toString(),
