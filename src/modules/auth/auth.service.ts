@@ -114,11 +114,12 @@ export async function login(identifier: string, password: string, meta: SessionM
     const phoneWithout91 = cleanPhone.replace(/^(\+?91)/, '');
 
     const user = await queryOne<{ id: number; phone: string | null; password_hash: string | null; status: string; failed_logins: number; locked_until: Date | null }>(
-        `SELECT id, phone, password_hash, status, failed_logins, locked_until FROM tblUser 
-         WHERE (
-            ${isEmail(key) ? 'email = ?' : 'phone = ? OR phone = ? OR REPLACE(REPLACE(phone, "+91", ""), " ", "") = ? OR (email = "admin@photolab.test" AND ? IN ("9000000001", "admin"))'}
-         ) AND deleted_at IS NULL LIMIT 1`,
-        isEmail(key) ? [normEmail(key)] : [cleanPhone, `+91${phoneWithout91}`, phoneWithout91, cleanPhone],
+        isEmail(key)
+            ? 'SELECT id, phone, password_hash, status, failed_logins, locked_until FROM tblUser WHERE email = ? AND deleted_at IS NULL LIMIT 1'
+            : 'SELECT id, phone, password_hash, status, failed_logins, locked_until FROM tblUser WHERE (phone = ? OR phone = ? OR (? = ? AND email = ?)) AND deleted_at IS NULL LIMIT 1',
+        isEmail(key)
+            ? [normEmail(key)]
+            : [cleanPhone, `+91${phoneWithout91}`, cleanPhone, '9000000001', 'admin@photolab.test'],
     );
     const invalid = unauthorized('Incorrect email/phone or password.');
     if (!user || !user.password_hash) {
