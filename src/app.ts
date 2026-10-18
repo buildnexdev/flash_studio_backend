@@ -55,6 +55,9 @@ function isOriginAllowed(origin: string | undefined): boolean {
     // Always allow Render deployments (*.onrender.com)
     if (/^https:\/\/[a-z0-9-]+(\.onrender\.com)$/.test(cleanOrigin)) return true;
 
+    // Always allow nammaqr.in and its subdomains (apps.nammaqr.in, flashstudio.nammaqr.in, etc.)
+    if (/^https?:\/\/([a-z0-9-]+\.)*nammaqr\.in$/.test(cleanOrigin)) return true;
+
     return false;
 }
 
