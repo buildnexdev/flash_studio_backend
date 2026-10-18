@@ -31,6 +31,33 @@ import { auditRouter, notificationsRouter, portalRouter, reportsRouter, settings
 import userRoutes from './modules/users/users.routes.js';
 import companyRoutes from './modules/companies/companies.routes.js';
 
+function isOriginAllowed(origin: string | undefined): boolean {
+    if (!origin) return true;
+    const cleanOrigin = origin.trim().replace(/\/$/, '').toLowerCase();
+
+    for (const allowed of config.corsOrigins) {
+        const normAllowed = allowed.trim().replace(/\/$/, '').toLowerCase();
+        if (normAllowed === '*' || normAllowed === cleanOrigin) return true;
+        if (normAllowed.includes('*')) {
+            const pattern = new RegExp(
+                '^' + normAllowed.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$',
+            );
+            if (pattern.test(cleanOrigin)) return true;
+        }
+    }
+
+    // Always allow localhost / loopback on any port
+    if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(cleanOrigin)) return true;
+
+    // Always allow Vercel previews and deployments (*.vercel.app)
+    if (/^https:\/\/[a-z0-9-]+(\.vercel\.app)$/.test(cleanOrigin)) return true;
+
+    // Always allow Render deployments (*.onrender.com)
+    if (/^https:\/\/[a-z0-9-]+(\.onrender\.com)$/.test(cleanOrigin)) return true;
+
+    return false;
+}
+
 export function createApp() {
     const app = express();
     app.disable('x-powered-by');
@@ -45,9 +72,25 @@ export function createApp() {
     );
     app.use(
         cors({
-            origin: (origin, cb) => cb(null, !origin || config.corsOrigins.includes(origin)),
+            origin: (origin, cb) => {
+                if (isOriginAllowed(origin)) {
+                    cb(null, true);
+                } else {
+                    console.warn(`[cors] Blocked origin: ${origin}. Configured corsOrigins:`, config.corsOrigins);
+                    cb(null, false);
+                }
+            },
             credentials: true,
-            allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Gallery-Session', 'X-Client', 'X-Studio-Slug'],
+            allowedHeaders: [
+                'Content-Type',
+                'Authorization',
+                'X-Requested-With',
+                'X-Gallery-Session',
+                'X-Client',
+                'X-Studio-Slug',
+                'Accept',
+            ],
+            methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
             maxAge: 600,
         }),
     );
