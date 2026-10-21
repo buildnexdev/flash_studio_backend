@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import mysql from 'mysql2/promise';
 import { config } from '../config/env.js';
+import { renamePrimaryKeys } from './primary-keys.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const migrationsDir = path.resolve(here, 'migrations');
@@ -72,6 +73,8 @@ export async function runMigrations(options: { reset?: boolean; log?: boolean; d
             await server.query('INSERT INTO tblSchemaMigration (name) VALUES (?)', [file]);
             ran.push(file);
         }
+        const renamed = await renamePrimaryKeys(server, log);
+        if (log && !renamed.length) console.log('[migrate] primary keys already use tableID names');
         if (log) console.log(ran.length ? `[migrate] ${ran.length} migration(s) applied to ${database}` : `[migrate] ${database} is up to date`);
         return ran;
     } finally {

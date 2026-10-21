@@ -1,7 +1,7 @@
 // Developer by: Buildnexdev.in
 // Devevloper : Nandhakumar@gmail.com
 // Last Edited : 06-10-2026 
-import { execute, query, queryOne, type Db, type Row, pool, withTransaction } from '../../db/pool.js';
+import { execute, primaryCompanyId, query, queryOne, type Db, type Row, pool, withTransaction } from '../../db/pool.js';
 import { conflict, notFound } from '../../utils/errors.js';
 import { likeTerm, offsetOf, orderBy, paged, type PageQuery } from '../../utils/pagination.js';
 import { audit, type AuditContext } from '../audit/audit.service.js';
@@ -88,10 +88,14 @@ export async function createCustomer(input: CustomerInput, ctx: AuditContext) {
         if (dupUser) throw conflict('A user with this email already exists.');
         const hash = await hashPassword(input.password);
         
-        const res = await execute('INSERT INTO tblUser (name, email, phone, password_hash, status, email_verified_at) VALUES (?, ?, ?, ?, ?, UTC_TIMESTAMP())', [input.name, input.email, input.phone ?? null, hash, 'ACTIVE']);
-        userId = res.insertId;
         const roleRes = await queryOne<{ id: number }>('SELECT id FROM tblRole WHERE code = ?', ['CUSTOMER']);
-        if (roleRes) await execute('INSERT INTO tblUserRole (user_id, role_id) VALUES (?, ?)', [userId, roleRes.id]);
+        if (!roleRes) throw conflict('The customer role is not available.');
+        const res = await execute(
+            'INSERT INTO tblUser (company_id, role_id, name, email, phone, password_hash, status, email_verified_at) VALUES (?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP())',
+            [await primaryCompanyId(), roleRes.id, input.name, input.email, input.phone ?? null, hash, 'ACTIVE'],
+        );
+        userId = res.insertId;
+        await execute('INSERT INTO tblUserRole (user_id, role_id) VALUES (?, ?)', [userId, roleRes.id]);
     }
     
     const email = input.email?.toLowerCase() ?? null;
@@ -118,10 +122,14 @@ export async function updateCustomer(id: number, input: CustomerInput, ctx: Audi
         } else {
             const dupUser = await queryOne('SELECT id FROM tblUser WHERE email = ?', [input.email]);
             if (dupUser) throw conflict('A user with this email already exists.');
-            const res = await execute('INSERT INTO tblUser (name, email, phone, password_hash, status, email_verified_at) VALUES (?, ?, ?, ?, ?, UTC_TIMESTAMP())', [input.name, input.email, input.phone ?? null, hash, 'ACTIVE']);
-            userId = res.insertId;
             const roleRes = await queryOne<{ id: number }>('SELECT id FROM tblRole WHERE code = ?', ['CUSTOMER']);
-            if (roleRes) await execute('INSERT INTO tblUserRole (user_id, role_id) VALUES (?, ?)', [userId, roleRes.id]);
+            if (!roleRes) throw conflict('The customer role is not available.');
+            const res = await execute(
+                'INSERT INTO tblUser (company_id, role_id, name, email, phone, password_hash, status, email_verified_at) VALUES (?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP())',
+                [await primaryCompanyId(), roleRes.id, input.name, input.email, input.phone ?? null, hash, 'ACTIVE'],
+            );
+            userId = res.insertId;
+            await execute('INSERT INTO tblUserRole (user_id, role_id) VALUES (?, ?)', [userId, roleRes.id]);
         }
     }
     

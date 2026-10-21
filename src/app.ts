@@ -30,6 +30,7 @@ import selectionRoutes from './modules/selections/selections.routes.js';
 import { auditRouter, notificationsRouter, portalRouter, reportsRouter, settingsRouter } from './modules/system/system.routes.js';
 import userRoutes from './modules/users/users.routes.js';
 import companyRoutes from './modules/companies/companies.routes.js';
+import companyPublicRoutes from './modules/companies/companies.public.routes.js';
 
 function isOriginAllowed(origin: string | undefined): boolean {
     if (!origin) return true;
@@ -125,6 +126,7 @@ export function createApp() {
     app.use('/api', apiLimiter);
 
     app.use('/api/auth', authRoutes);
+    app.use('/api/public/companies', companyPublicRoutes);
     app.use('/api/public', publicRoutes);
     app.use('/api/gallery', publicGalleryRoutes);
     app.use('/api/companies', companyRoutes);

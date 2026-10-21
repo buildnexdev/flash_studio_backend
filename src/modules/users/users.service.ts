@@ -2,7 +2,7 @@
 // Devevloper : Nandhakumar@gmail.com
 // Last Edited : 06-10-2026
 import { PERMISSIONS, ROLES, STAFF_ROLES, type Permission, type RoleCode } from '../../config/rbac.js';
-import { execute, query, queryOne, withTransaction } from '../../db/pool.js';
+import { execute, primaryCompanyId, query, queryOne, withTransaction } from '../../db/pool.js';
 import { invalidateUserCache } from '../../middleware/auth.js';
 import { badRequest, conflict, forbidden, notFound } from '../../utils/errors.js';
 import { likeTerm, offsetOf, orderBy, paged } from '../../utils/pagination.js';
@@ -34,7 +34,7 @@ export async function listUsers(f: UserFilter) {
     const w = where.join(' AND ');
     const total = (await queryOne<{ n: number }>(`SELECT COUNT(*) AS n FROM tblUser u WHERE ${w}`, params))?.n ?? 0;
     const items = await query(
-        `SELECT u.id, u.name, u.email, u.phone, u.status, u.last_login_at, u.created_at,
+        `SELECT u.id, u.company_id, u.role_id, u.name, u.email, u.phone, u.status, u.last_login_at, u.created_at,
                 (SELECT GROUP_CONCAT(r.code ORDER BY r.id) FROM tblUserRole ur JOIN tblRole r ON r.id = ur.role_id WHERE ur.user_id = u.id) AS roles,
                 s.designation, s.department, p.camera_gear, p.specialties AS photographer_specialties, e.software
            FROM tblUser u
@@ -51,7 +51,7 @@ export async function listUsers(f: UserFilter) {
 
 export async function getUser(id: number) {
     const u = await queryOne(
-        `SELECT u.id, u.name, u.email, u.phone, u.status, u.last_login_at, u.created_at,
+        `SELECT u.id, u.company_id, u.role_id, u.name, u.email, u.phone, u.status, u.last_login_at, u.created_at,
                 s.designation, s.department, s.joined_on, p.camera_gear, p.specialties AS photographer_specialties, p.day_rate, e.software, e.specialties AS editor_specialties
            FROM tblUser u LEFT JOIN tblStaff s ON s.user_id = u.id LEFT JOIN tblPhotographer p ON p.user_id = u.id LEFT JOIN tblEditor e ON e.user_id = u.id
           WHERE u.id = ? AND u.deleted_at IS NULL`,
@@ -102,6 +102,8 @@ async function setRoles(conn: Parameters<Parameters<typeof withTransaction>[0]>[
     await execute('DELETE FROM tblUserRole WHERE user_id = ?', [userId], conn);
     const ids = await query<{ id: number }>('SELECT id FROM tblRole WHERE code IN (?)', [roles], conn);
     for (const r of ids) await execute('INSERT INTO tblUserRole (user_id, role_id) VALUES (?, ?)', [userId, r.id], conn);
+    const primary = await queryOne<{ id: number }>('SELECT id FROM tblRole WHERE code = ?', [roles[0]], conn);
+    if (primary) await execute('UPDATE tblUser SET role_id = ? WHERE id = ?', [primary.id, userId], conn);
 }
 
 export async function createUser(input: StaffInput, actorRoles: RoleCode[], ctx: AuditContext) {
@@ -111,7 +113,14 @@ export async function createUser(input: StaffInput, actorRoles: RoleCode[], ctx:
     if (dup) throw conflict('A user with this email or phone already exists.');
     const hash = await hashPassword(input.password);
     const id = await withTransaction(async (conn) => {
-        const res = await execute('INSERT INTO tblUser (name, email, phone, password_hash, status, email_verified_at) VALUES (?, ?, ?, ?, ?, UTC_TIMESTAMP())', [input.name, input.email, input.phone ?? null, hash, input.status ?? 'ACTIVE'], conn);
+        const companyId = await primaryCompanyId(conn);
+        const primaryRole = await queryOne<{ id: number }>('SELECT id FROM tblRole WHERE code = ?', [input.roles[0]], conn);
+        if (!primaryRole) throw badRequest('A role is required.');
+        const res = await execute(
+            'INSERT INTO tblUser (company_id, role_id, name, email, phone, password_hash, status, email_verified_at) VALUES (?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP())',
+            [companyId, primaryRole.id, input.name, input.email, input.phone ?? null, hash, input.status ?? 'ACTIVE'],
+            conn,
+        );
         await setRoles(conn, res.insertId, input.roles);
         await syncProfiles(conn, res.insertId, input);
         if (input.roles.includes('CUSTOMER')) {

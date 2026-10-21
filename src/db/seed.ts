@@ -7,7 +7,7 @@ import { config } from '../config/env.js';
 import { PERMISSIONS, ROLE_LABELS, ROLE_PERMISSIONS, ROLES, type RoleCode } from '../config/rbac.js';
 import { FLASH_PACKAGES, FLASH_PORTFOLIO, FLASH_SERVICES, FLASH_SLUG, FLASH_STUDIO, FLASH_TESTIMONIALS, FLASH_WEBSITE } from './flashlight-content.js';
 import { DEFAULT_SETTINGS, clearSettingsCache } from '../modules/settings/settings.service.js';
-import { closePool, execute, json, platformDatabaseName, query, queryOne } from './pool.js';
+import { closePool, execute, json, platformDatabaseName, primaryCompanyId, query, queryOne } from './pool.js';
 
 /** Default password for the non-production test accounts (override with SEED_PASSWORD). */
 export const TEST_PASSWORD = process.env.SEED_PASSWORD || 'PhotoLab@2026';
@@ -44,6 +44,9 @@ export async function seedRbac(resetPermissions: boolean) {
 }
 
 export async function ensureUser(u: { role: RoleCode; name: string; email: string; phone: string | null }, password: string): Promise<number> {
+    const companyId = await primaryCompanyId();
+    const role = await queryOne<{ id: number }>('SELECT id FROM tblRole WHERE code = ?', [u.role]);
+    if (!role) throw new Error(`Role ${u.role} is not seeded`);
     const existing = await queryOne<{ id: number; password_hash: string | null }>('SELECT id, password_hash FROM tblUser WHERE email = ?', [u.email]);
     let userId: number;
     if (existing) {
@@ -52,10 +55,14 @@ export async function ensureUser(u: { role: RoleCode; name: string; email: strin
             const hash = await bcrypt.hash(password, 12);
             await execute('UPDATE tblUser SET password_hash = ? WHERE id = ?', [hash, userId]);
         }
+        await execute('UPDATE tblUser SET company_id = COALESCE(company_id, ?), role_id = ? WHERE id = ?', [companyId, role.id, userId]);
     } else {
         const hash = await bcrypt.hash(password, 12);
         userId = (
-            await execute('INSERT INTO tblUser (name, email, phone, password_hash, email_verified_at) VALUES (?, ?, ?, ?, UTC_TIMESTAMP())', [u.name, u.email, u.phone, hash])
+            await execute(
+                'INSERT INTO tblUser (company_id, role_id, name, email, phone, password_hash, email_verified_at) VALUES (?, ?, ?, ?, ?, ?, UTC_TIMESTAMP())',
+                [companyId, role.id, u.name, u.email, u.phone, hash],
+            )
         ).insertId;
     }
     await execute('INSERT IGNORE INTO tblUserRole (user_id, role_id) SELECT ?, id FROM tblRole WHERE code = ?', [userId, u.role]);
