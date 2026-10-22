@@ -140,9 +140,6 @@ export interface CompanySignupInput {
     modules: CompanyModuleCode[];
 }
 
-const modulePrice = (codes: string[]) =>
-    COMPANY_MODULES.filter((m) => codes.includes(m.code)).reduce((sum, m) => sum + m.price, 0);
-
 async function ignoreSchemaError(sql: string) {
     try {
         await platformExecute(sql);
@@ -184,6 +181,30 @@ export async function ensureCompanyPlatformSchema() {
     );
 }
 
+const phoneDigits = (phone: string) => phone.replace(/\D/g, '').slice(-10);
+
+/** True when this phone is already stored on a company or a user. */
+export async function registrationPhoneTaken(phone: string): Promise<boolean> {
+    const digits = phoneDigits(phone);
+    if (!/^\d{10}$/.test(digits)) return false;
+    const normalized = "RIGHT(REPLACE(REPLACE(REPLACE(IFNULL(phone, ''), ' ', ''), '-', ''), '+', ''), 10)";
+    const company = await platformQueryOne(`SELECT companyID FROM tblCompany WHERE phone IS NOT NULL AND ${normalized} = ? LIMIT 1`, [digits]);
+    const user = await platformQueryOne(`SELECT userID FROM tblUser WHERE deleted_at IS NULL AND phone IS NOT NULL AND ${normalized} = ? LIMIT 1`, [digits]);
+    return Boolean(company || user);
+}
+
+/** First registration step: a new 10-digit number that is not on tblCompany or tblUser. */
+export async function checkRegistrationPhone(phone: string) {
+    const digits = phone.replace(/\D/g, '');
+    if (!/^\d{10}$/.test(digits)) {
+        throw badRequest('Enter a 10-digit phone number.', [{ field: 'phone', message: 'Enter a 10-digit phone number.' }]);
+    }
+    if (await registrationPhoneTaken(digits)) {
+        throw badRequest('This phone number already exists. Enter a new number.', [{ field: 'phone', message: 'This phone number already exists. Enter a new number.' }]);
+    }
+    return { available: true as const };
+}
+
 export async function findCompanyDuplicates(input: { name?: string; phone?: string; ownerEmail?: string; gstNumber?: string; aadhaarNumber?: string; panNumber?: string }) {
     await ensureCompanyPlatformSchema();
     const errors: { field: string; message: string }[] = [];
@@ -203,7 +224,6 @@ export async function findCompanyDuplicates(input: { name?: string; phone?: stri
         }
     }
     const row = await platformQueryOne<{
-        phone: string | null;
         email: string | null;
         gst_number: string | null;
         aadhaar_number: string | null;
@@ -212,7 +232,6 @@ export async function findCompanyDuplicates(input: { name?: string; phone?: stri
         database_name: string | null;
     }>(
         `SELECT
-            MAX(CASE WHEN phone = ? THEN phone END) AS phone,
             MAX(CASE WHEN owner_email = ? OR email = ? THEN email END) AS email,
             MAX(CASE WHEN gst_number = ? THEN gst_number END) AS gst_number,
             MAX(CASE WHEN aadhaar_number = ? THEN aadhaar_number END) AS aadhaar_number,
@@ -220,9 +239,9 @@ export async function findCompanyDuplicates(input: { name?: string; phone?: stri
             MAX(CASE WHEN slug = ? OR database_name = ? THEN slug END) AS slug,
             MAX(CASE WHEN slug = ? OR database_name = ? THEN database_name END) AS database_name
          FROM tblCompany`,
-        [phone, email, email, gst, aadhaar, pan, slug, databaseName, slug, databaseName],
+        [email, email, gst, aadhaar, pan, slug, databaseName, slug, databaseName],
     );
-    if (phone && row?.phone) errors.push({ field: 'phone', message: 'This phone number is already registered.' });
+    if (phone && (await registrationPhoneTaken(phone))) errors.push({ field: 'phone', message: 'This phone number already exists. Enter a new number.' });
     if (email && row?.email) errors.push({ field: 'ownerEmail', message: 'This email is already registered.' });
     if (gst && row?.gst_number) errors.push({ field: 'gstNumber', message: 'This GST number is already registered.' });
     if (aadhaar && row?.aadhaar_number) errors.push({ field: 'aadhaarNumber', message: 'This Aadhaar number is already registered.' });
@@ -239,8 +258,7 @@ export async function startCompanyCheckout(input: CompanySignupInput) {
     if (!input.modules.length) throw badRequest('Select at least one module.', [{ field: 'modules', message: 'Select at least one module' }]);
     const unknown = input.modules.filter((code) => !COMPANY_MODULES.some((m) => m.code === code));
     if (unknown.length) throw badRequest('Unknown module selected.');
-    const rupees = modulePrice(input.modules);
-    const amountPaise = rupees * 100;
+    const amountPaise = 0;
     const passwordHash = await bcrypt.hash(input.password, 12);
     const payload = JSON.stringify({
         ...input,
@@ -373,8 +391,11 @@ export async function completeCompanySignup(input: { signupId: number; providerO
     try {
         await openInstance(saved, databaseName, slug);
     } catch (err) {
-        await platformExecute('DELETE FROM tblCompany WHERE id = ?', [inserted.insertId]);
-        throw badRequest(`The company record was saved, then the studio database could not be created. Nothing was kept. ${(err as Error).message}`);
+        await platformExecute('DELETE FROM tblCompany WHERE companyID = ?', [inserted.insertId]);
+        if (/^[a-z0-9_]+$/.test(databaseName) && databaseName !== platformDatabaseName()) {
+            await platformExecute(`DROP DATABASE IF EXISTS \`${databaseName}\``).catch(() => undefined);
+        }
+        throw badRequest(`The studio could not be created. Nothing was kept. ${(err as Error).message}`);
     }
     await platformExecute('UPDATE tblCompanySignup SET status = ?, company_id = ? WHERE id = ?', ['PAID', inserted.insertId, row.id]);
     const moduleLabels = COMPANY_MODULES.filter((m) => saved.modules.includes(m.code)).map((m) => m.label).join(', ');

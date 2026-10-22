@@ -4,7 +4,7 @@
 import type { NextFunction, Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
 import { config } from '../config/env.js';
-import type { Permission, RoleCode } from '../config/rbac.js';
+import { ROLE_LEVEL, primaryRole, type Permission, type RoleCode } from '../config/rbac.js';
 import { currentDatabaseKey, query, queryOne } from '../db/pool.js';
 import { forbidden, unauthorized } from '../utils/errors.js';
 
@@ -13,6 +13,7 @@ export interface AuthUser {
     name: string;
     email: string | null;
     phone: string | null;
+    companyId: number | null;
     roles: RoleCode[];
     permissions: Set<Permission>;
     customerId: number | null;
@@ -40,8 +41,8 @@ export async function loadAuthUser(userId: number): Promise<AuthUser | null> {
     const hit = cache.get(key);
     if (hit && hit.expires > Date.now()) return hit.user;
 
-    const row = await queryOne<{ id: number; name: string; email: string | null; phone: string | null; status: string; token_version: number; customer_id: number | null }>(
-        `SELECT u.id, u.name, u.email, u.phone, u.status, u.token_version, c.id AS customer_id
+    const row = await queryOne<{ id: number; company_id: number | null; name: string; email: string | null; phone: string | null; status: string; token_version: number; customer_id: number | null }>(
+        `SELECT u.id, u.company_id, u.name, u.email, u.phone, u.status, u.token_version, c.id AS customer_id
            FROM tblUser u LEFT JOIN tblCustomer c ON c.user_id = u.id AND c.deleted_at IS NULL
           WHERE u.id = ? AND u.deleted_at IS NULL`,
         [userId],
@@ -59,6 +60,7 @@ export async function loadAuthUser(userId: number): Promise<AuthUser | null> {
     );
     const user: AuthUser = {
         id: row.id,
+        companyId: row.company_id,
         name: row.name,
         email: row.email,
         phone: row.phone,
@@ -138,7 +140,9 @@ export function serializeUser(user: AuthUser) {
         name: user.name,
         email: user.email,
         phone: user.phone,
+        companyId: user.companyId,
         roles: user.roles,
+        roleLevel: primaryRole(user.roles) ? ROLE_LEVEL[primaryRole(user.roles)!] : null,
         permissions: [...user.permissions],
         customerId: user.customerId,
     };

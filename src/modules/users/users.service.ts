@@ -1,7 +1,7 @@
 // Developer by: Buildnexdev.in
 // Devevloper : Nandhakumar@gmail.com
 // Last Edited : 06-10-2026
-import { PERMISSIONS, ROLES, STAFF_ROLES, type Permission, type RoleCode } from '../../config/rbac.js';
+import { PERMISSIONS, ROLE_LEVEL, ROLES, STAFF_ROLES, type Permission, type RoleCode } from '../../config/rbac.js';
 import { execute, primaryCompanyId, query, queryOne, withTransaction } from '../../db/pool.js';
 import { invalidateUserCache } from '../../middleware/auth.js';
 import { badRequest, conflict, forbidden, notFound } from '../../utils/errors.js';
@@ -16,6 +16,7 @@ export interface UserFilter {
     role?: RoleCode;
     status?: string;
     staffOnly?: boolean;
+    companyId?: number;
     sort?: string;
     order: 'asc' | 'desc';
 }
@@ -31,6 +32,7 @@ export async function listUsers(f: UserFilter) {
     if (f.status) { where.push('u.status = ?'); params.push(f.status); }
     if (f.role) { where.push('EXISTS (SELECT 1 FROM tblUserRole ur JOIN tblRole r ON r.id = ur.role_id WHERE ur.user_id = u.id AND r.code = ?)'); params.push(f.role); }
     if (f.staffOnly) { where.push("EXISTS (SELECT 1 FROM tblUserRole ur JOIN tblRole r ON r.id = ur.role_id WHERE ur.user_id = u.id AND r.code <> 'CUSTOMER')"); }
+    if (f.companyId) { where.push('u.company_id = ?'); params.push(f.companyId); }
     const w = where.join(' AND ');
     const total = (await queryOne<{ n: number }>(`SELECT COUNT(*) AS n FROM tblUser u WHERE ${w}`, params))?.n ?? 0;
     const items = await query(
@@ -50,7 +52,7 @@ export async function listUsers(f: UserFilter) {
 }
 
 export async function getUser(id: number) {
-    const u = await queryOne(
+    const u = await queryOne<{ id: number; company_id: number | null; name: string; email: string | null; phone: string | null; status: string }>(
         `SELECT u.id, u.company_id, u.role_id, u.name, u.email, u.phone, u.status, u.last_login_at, u.created_at,
                 s.designation, s.department, s.joined_on, p.camera_gear, p.specialties AS photographer_specialties, p.day_rate, e.software, e.specialties AS editor_specialties
            FROM tblUser u LEFT JOIN tblStaff s ON s.user_id = u.id LEFT JOIN tblPhotographer p ON p.user_id = u.id LEFT JOIN tblEditor e ON e.user_id = u.id
@@ -169,8 +171,11 @@ export async function deleteUser(id: number, actor: { id: number; roles: RoleCod
 }
 
 export async function listRoles() {
-    const roles = await query<{ id: number; code: RoleCode; name: string; description: string | null; users: number }>(
-        'SELECT r.id, r.code, r.name, r.description, (SELECT COUNT(*) FROM tblUserRole ur JOIN tblUser u ON u.id = ur.user_id AND u.deleted_at IS NULL WHERE ur.role_id = r.id) AS users FROM tblRole r ORDER BY r.id',
+    const roles = await query<{ id: number; code: RoleCode; name: string; description: string | null; level: number; users: number }>(
+        `SELECT r.id, r.code, r.name, r.description, r.level,
+                (SELECT COUNT(*) FROM tblUserRole ur JOIN tblUser u ON u.id = ur.user_id AND u.deleted_at IS NULL WHERE ur.role_id = r.id) AS users
+           FROM tblRole r
+          ORDER BY CASE WHEN r.level = 100 THEN 0 WHEN r.level = 0 THEN 99 ELSE r.level END, r.name`,
     );
     const grants = await query<{ role_id: number; code: Permission }>('SELECT rp.role_id, p.code FROM tblRolePermission rp JOIN tblPermission p ON p.id = rp.permission_id');
     const permissions = Object.entries(PERMISSIONS).map(([code, [module, description]]) => ({ code, module, description }));
@@ -180,8 +185,12 @@ export async function listRoles() {
     };
 }
 
-export async function setRolePermissions(roleCode: RoleCode, permissions: Permission[], ctx: AuditContext) {
+export async function setRolePermissions(roleCode: RoleCode, permissions: Permission[], actorRoles: RoleCode[], ctx: AuditContext) {
     if (roleCode === 'SUPER_ADMIN') throw badRequest('Super Admin always has every permission.');
+    if (!actorRoles.includes('SUPER_ADMIN') && (ROLE_LEVEL[roleCode] === 100 || ROLE_LEVEL[roleCode] === 1)) {
+        throw forbidden('Only a Super Admin can change owner or platform access.');
+    }
+    if (roleCode === 'CUSTOMER' && !permissions.includes('customer.portal')) throw badRequest('The customer panel has to stay available.');
     const role = await queryOne<{ id: number }>('SELECT id FROM tblRole WHERE code = ?', [roleCode]);
     if (!role) throw notFound('Role');
     for (const p of permissions) if (!(p in PERMISSIONS)) throw badRequest(`Unknown permission ${p}`);
@@ -196,6 +205,33 @@ export async function setRolePermissions(roleCode: RoleCode, permissions: Permis
     invalidateUserCache();
     await audit(ctx, 'PERMISSION_CHANGED', 'roles', roleCode, { from: before.map((b) => b.code), to: permissions });
     return listRoles();
+}
+
+/** Replace a user's role. Company owners and admins stay inside their company and cannot grant level 100 or level 1. */
+export async function assignUserRole(userId: number, role: RoleCode, actor: { id: number; roles: RoleCode[]; companyId: number | null }, ctx: AuditContext) {
+    if (userId === actor.id) throw badRequest('You cannot change your own access level.');
+    if (!ROLES.includes(role)) throw badRequest(`Unknown role ${role}`);
+    const current = await getUser(userId);
+    const currentRoles = current.roles as RoleCode[];
+    if (!actor.roles.includes('SUPER_ADMIN')) {
+        if (!actor.companyId || Number(current.company_id) !== actor.companyId) throw forbidden('You can only assign access inside your company.');
+        if (ROLE_LEVEL[role] === 100 || ROLE_LEVEL[role] === 1) throw forbidden('Only a Super Admin can assign owner access.');
+        if (currentRoles.some((code) => ROLE_LEVEL[code] === 100 || ROLE_LEVEL[code] === 1)) throw forbidden('Only a Super Admin can change an owner account.');
+    }
+    await withTransaction(async (conn) => {
+        await setRoles(conn, userId, [role]);
+        await syncProfiles(conn, userId, { name: String(current.name), email: String(current.email ?? ''), roles: [role] });
+        if (role === 'CUSTOMER') {
+            await execute(
+                'INSERT INTO tblCustomer (user_id, name, email, phone, source) SELECT ?, name, email, phone, ? FROM tblUser WHERE id = ? AND NOT EXISTS (SELECT 1 FROM tblCustomer WHERE user_id = ?)',
+                [userId, 'ADMIN', userId, userId],
+                conn,
+            );
+        }
+    });
+    invalidateUserCache(userId);
+    await audit(ctx, 'PERMISSION_CHANGED', 'users', userId, { from: currentRoles, to: [role] });
+    return getUser(userId);
 }
 
 /** Staff that can be assigned to events, filtered by role. */

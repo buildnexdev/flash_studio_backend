@@ -27,6 +27,7 @@ import photoRoutes from './modules/photos/photos.routes.js';
 import { deliveryRouter, printingRouter, proofsRouter } from './modules/production/production.routes.js';
 import publicRoutes from './modules/public/public.routes.js';
 import selectionRoutes from './modules/selections/selections.routes.js';
+import assetRoutes from './modules/system/asset.routes.js';
 import { auditRouter, notificationsRouter, portalRouter, reportsRouter, settingsRouter } from './modules/system/system.routes.js';
 import userRoutes from './modules/users/users.routes.js';
 import companyRoutes from './modules/companies/companies.routes.js';
@@ -135,6 +136,7 @@ export function createApp() {
     app.use('/api/catalog', catalogRoutes);
     app.use('/api/bookings', bookingRoutes);
     app.use('/api/events', eventRoutes);
+    app.use('/api/assets', assetRoutes);
     app.use('/api/galleries', galleryRoutes);
     app.use('/api/photos', photoRoutes);
     app.use('/api/selections', selectionRoutes);

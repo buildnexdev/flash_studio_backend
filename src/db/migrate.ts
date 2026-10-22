@@ -11,6 +11,22 @@ import { renamePrimaryKeys } from './primary-keys.js';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const migrationsDir = path.resolve(here, 'migrations');
 
+/** Keep SQL that follows a leading `--` comment. The comment is not the whole statement. */
+function stripLeadingComments(chunk: string): string {
+    let rest = chunk.trim();
+    while (rest.startsWith('--') || rest.startsWith('#')) {
+        const nl = rest.search(/\r?\n/);
+        if (nl === -1) return '';
+        rest = rest.slice(nl + 1).trim();
+    }
+    while (rest.startsWith('/*')) {
+        const end = rest.indexOf('*/');
+        if (end === -1) return '';
+        rest = rest.slice(end + 2).trim();
+    }
+    return rest;
+}
+
 function splitUrl(url: string) {
     const parsed = new URL(url);
     const database = decodeURIComponent(parsed.pathname.replace(/^\//, ''));
@@ -58,15 +74,15 @@ export async function runMigrations(options: { reset?: boolean; log?: boolean; d
             if (log) console.log(`[migrate] applying ${file}`);
             const statements = sql
                 .split(/;\s*(?:\r?\n|$)/)
-                .map((s) => s.trim())
-                .filter((s) => s && !s.startsWith('--'));
+                .map(stripLeadingComments)
+                .filter((s) => s.length > 0);
             for (const statement of statements) {
                 try {
                     await server.query(`${statement};`);
                 } catch (err) {
                     const code = (err as { errno?: number }).errno;
-                    // Duplicate column / duplicate key — safe when re-running partial migrations
-                    if (code === 1060 || code === 1061) continue;
+                    // Duplicate column, duplicate key, or table left behind by a failed attempt
+                    if (code === 1050 || code === 1060 || code === 1061) continue;
                     throw err;
                 }
             }

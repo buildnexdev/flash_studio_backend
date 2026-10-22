@@ -6,7 +6,7 @@ import { publicFormLimiter } from '../../middleware/rate-limit.js';
 import { validate } from '../../middleware/validate.js';
 import { asyncHandler, ok } from '../../utils/http.js';
 import { email, password, phone } from '../../utils/schemas.js';
-import { COMPANY_MODULES, completeCompanySignup, devpayCompanyCheckout, findCompanyDuplicates, startCompanyCheckout } from './companies.service.js';
+import { COMPANY_MODULES, checkRegistrationPhone, completeCompanySignup, devpayCompanyCheckout, findCompanyDuplicates, startCompanyCheckout } from './companies.service.js';
 
 const router = Router();
 const moduleCode = z.enum(['asset', 'staff', 'event', 'report', 'ecommerce']);
@@ -30,6 +30,15 @@ router.get(
     '/modules',
     asyncHandler(async (_req, res) => {
         ok(res, COMPANY_MODULES);
+    }),
+);
+
+router.post(
+    '/check-phone',
+    publicFormLimiter,
+    validate(z.object({ phone: z.string().trim().regex(/^\d{10}$/, 'Enter a 10-digit phone number') })),
+    asyncHandler(async (req, res) => {
+        ok(res, await checkRegistrationPhone(req.body.phone));
     }),
 );
 

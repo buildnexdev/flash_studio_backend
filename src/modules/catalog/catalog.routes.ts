@@ -76,16 +76,18 @@ router.use(authenticate);
 
 const viewCatalog = requirePermission('pricing.manage', 'bookings.manage', 'bookings.view');
 const manage = requirePermission('pricing.manage');
+const viewServices = requirePermission('pricing.manage', 'bookings.manage', 'bookings.view', 'customer.portal');
+const manageServices = requirePermission('pricing.manage', 'customer.portal');
 
-router.get('/services', viewCatalog, asyncHandler(async (_req, res) => { ok(res, await catalog.listServices()); }));
-router.post('/services', manage, validate(serviceBody), asyncHandler(async (req, res) => { created(res, await catalog.saveService(null, req.body, auditCtx(req))); }));
-router.put('/services/:id', manage, validate(idParam, 'params'), validate(serviceBody), asyncHandler(async (req, res) => { ok(res, await catalog.saveService(Number(req.params.id), req.body, auditCtx(req)), 'Service updated'); }));
-router.delete('/services/:id', manage, validate(idParam, 'params'), asyncHandler(async (req, res) => { await catalog.deleteService(Number(req.params.id), auditCtx(req)); ok(res, null, 'Service deleted'); }));
+router.get('/services', viewServices, asyncHandler(async (_req, res) => { ok(res, await catalog.listServices()); }));
+router.post('/services', manageServices, validate(serviceBody), asyncHandler(async (req, res) => { created(res, await catalog.saveService(null, req.body, auditCtx(req))); }));
+router.put('/services/:id', manageServices, validate(idParam, 'params'), validate(serviceBody), asyncHandler(async (req, res) => { ok(res, await catalog.saveService(Number(req.params.id), req.body, auditCtx(req)), 'Service updated'); }));
+router.delete('/services/:id', manageServices, validate(idParam, 'params'), asyncHandler(async (req, res) => { await catalog.deleteService(Number(req.params.id), auditCtx(req)); ok(res, null, 'Service deleted'); }));
 
-router.get('/packages', viewCatalog, asyncHandler(async (_req, res) => { ok(res, await catalog.listPackages()); }));
-router.post('/packages', manage, validate(packageBody), asyncHandler(async (req, res) => { created(res, await catalog.savePackage(null, req.body, auditCtx(req))); }));
-router.put('/packages/:id', manage, validate(idParam, 'params'), validate(packageBody), asyncHandler(async (req, res) => { ok(res, await catalog.savePackage(Number(req.params.id), req.body, auditCtx(req)), 'Package updated'); }));
-router.delete('/packages/:id', manage, validate(idParam, 'params'), asyncHandler(async (req, res) => { await catalog.deletePackage(Number(req.params.id), auditCtx(req)); ok(res, null, 'Package deleted'); }));
+router.get('/packages', viewServices, asyncHandler(async (_req, res) => { ok(res, await catalog.listPackages()); }));
+router.post('/packages', manageServices, validate(packageBody), asyncHandler(async (req, res) => { created(res, await catalog.savePackage(null, req.body, auditCtx(req))); }));
+router.put('/packages/:id', manageServices, validate(idParam, 'params'), validate(packageBody), asyncHandler(async (req, res) => { ok(res, await catalog.savePackage(Number(req.params.id), req.body, auditCtx(req)), 'Package updated'); }));
+router.delete('/packages/:id', manageServices, validate(idParam, 'params'), asyncHandler(async (req, res) => { await catalog.deletePackage(Number(req.params.id), auditCtx(req)); ok(res, null, 'Package deleted'); }));
 
 router.get('/coupons', manage, asyncHandler(async (_req, res) => { ok(res, await catalog.listCoupons()); }));
 router.post('/coupons', manage, validate(couponBody), asyncHandler(async (req, res) => { created(res, await catalog.saveCoupon(null, req.body, auditCtx(req))); }));

@@ -36,7 +36,9 @@ router.get(
     requirePermission('users.manage', 'staff.manage'),
     validate(pageQuery.extend({ role: roleEnum.optional(), status: z.enum(['ACTIVE', 'INACTIVE', 'LOCKED']).optional(), staffOnly: z.coerce.boolean().optional() }), 'query'),
     asyncHandler(async (req, res) => {
-        ok(res, await users.listUsers(req.query as unknown as users.UserFilter));
+        const filter = req.query as unknown as users.UserFilter;
+        if (!req.user!.roles.includes('SUPER_ADMIN')) filter.companyId = req.user!.companyId ?? -1;
+        ok(res, await users.listUsers(filter));
     }),
 );
 
@@ -63,7 +65,21 @@ router.put(
     validate(z.object({ code: roleEnum }), 'params'),
     validate(z.object({ permissions: z.array(z.enum(Object.keys(PERMISSIONS) as [Permission, ...Permission[]])) })),
     asyncHandler(async (req, res) => {
-        ok(res, await users.setRolePermissions(req.params.code as RoleCode, req.body.permissions, auditCtx(req)), 'Permissions updated');
+        ok(res, await users.setRolePermissions(req.params.code as RoleCode, req.body.permissions, req.user!.roles, auditCtx(req)), 'Permissions updated');
+    }),
+);
+
+router.put(
+    '/:id/role',
+    requirePermission('users.manage'),
+    validate(idParam, 'params'),
+    validate(z.object({ role: roleEnum })),
+    asyncHandler(async (req, res) => {
+        ok(
+            res,
+            await users.assignUserRole(Number(req.params.id), req.body.role, { id: req.user!.id, roles: req.user!.roles, companyId: req.user!.companyId }, auditCtx(req)),
+            'Access updated',
+        );
     }),
 );
 

@@ -4,7 +4,7 @@
 import bcrypt from 'bcryptjs';
 import type { PoolConnection } from 'mysql2/promise';
 import { config } from '../../config/env.js';
-import { ROLE_HOME, type RoleCode } from '../../config/rbac.js';
+import { ROLE_HOME, primaryRole, type RoleCode } from '../../config/rbac.js';
 import { currentStudioSlug, execute, primaryCompanyId, query, queryOne, withTransaction, type Db, pool } from '../../db/pool.js';
 import { invalidateUserCache, loadAuthUser, serializeUser, signAccessToken } from '../../middleware/auth.js';
 import { sendEmail, sendSms, sendWhatsApp } from '../../lib/channels.js';
@@ -63,7 +63,7 @@ export async function sessionPayload(userId: number, tokens: IssuedTokens) {
     invalidateUserCache(userId);
     const user = await loadAuthUser(userId);
     if (!user) throw unauthorized('Account is not active.');
-    const primary = (['SUPER_ADMIN', 'STUDIO_OWNER', 'MANAGER', 'PHOTOGRAPHER', 'EDITOR_DESIGNER', 'PRINTER_DELIVERY_STAFF', 'CUSTOMER'] as RoleCode[]).find((r) => user.roles.includes(r));
+    const primary = primaryRole(user.roles);
     return {
         user: serializeUser(user),
         accessToken: tokens.accessToken,

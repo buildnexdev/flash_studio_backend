@@ -4,7 +4,7 @@
 import bcrypt from 'bcryptjs';
 import { pathToFileURL } from 'node:url';
 import { config } from '../config/env.js';
-import { PERMISSIONS, ROLE_LABELS, ROLE_PERMISSIONS, ROLES, type RoleCode } from '../config/rbac.js';
+import { PERMISSIONS, ROLE_LABELS, ROLE_LEVEL, ROLE_PERMISSIONS, ROLES, type RoleCode } from '../config/rbac.js';
 import { FLASH_PACKAGES, FLASH_PORTFOLIO, FLASH_SERVICES, FLASH_SLUG, FLASH_STUDIO, FLASH_TESTIMONIALS, FLASH_WEBSITE } from './flashlight-content.js';
 import { DEFAULT_SETTINGS, clearSettingsCache } from '../modules/settings/settings.service.js';
 import { closePool, execute, json, platformDatabaseName, primaryCompanyId, query, queryOne } from './pool.js';
@@ -14,11 +14,15 @@ export const TEST_PASSWORD = process.env.SEED_PASSWORD || 'PhotoLab@2026';
 
 export const TEST_USERS: { role: RoleCode; name: string; email: string; phone: string }[] = [
     { role: 'SUPER_ADMIN', name: 'Super Admin', email: 'admin@photolab.test', phone: '9000000001' },
-    { role: 'STUDIO_OWNER', name: 'Studio Owner', email: 'owner@photolab.test', phone: '9000000002' },
+    { role: 'STUDIO_OWNER', name: 'Company Owner', email: 'owner@photolab.test', phone: '9000000002' },
+    { role: 'COMPANY_ADMIN', name: 'Company Admin', email: 'companyadmin@photolab.test', phone: '9000000008' },
     { role: 'MANAGER', name: 'Studio Manager', email: 'manager@photolab.test', phone: '9000000003' },
     { role: 'PHOTOGRAPHER', name: 'Arjun Photographer', email: 'photographer@photolab.test', phone: '9000000004' },
     { role: 'EDITOR_DESIGNER', name: 'Meera Editor', email: 'editor@photolab.test', phone: '9000000005' },
+    { role: 'STAFF', name: 'Studio Staff', email: 'staff@photolab.test', phone: '9000000009' },
     { role: 'PRINTER_DELIVERY_STAFF', name: 'Ravi Print & Delivery', email: 'delivery@photolab.test', phone: '9000000006' },
+    { role: 'REPORT_MANAGER', name: 'Report Manager', email: 'reports@photolab.test', phone: '9000000010' },
+    { role: 'FINANCE', name: 'Finance Team', email: 'finance@photolab.test', phone: '9000000011' },
     { role: 'CUSTOMER', name: 'Priya Customer', email: 'customer@photolab.test', phone: '9000000007' },
 ];
 
@@ -29,7 +33,10 @@ export async function seedRbac(resetPermissions: boolean) {
         await execute('INSERT INTO tblPermission (code, module, description) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE module = VALUES(module), description = VALUES(description)', [code, module, description]);
     }
     for (const code of ROLES) {
-        await execute('INSERT INTO tblRole (code, name, is_system) VALUES (?, ?, 1) ON DUPLICATE KEY UPDATE name = VALUES(name)', [code, ROLE_LABELS[code]]);
+        await execute(
+            'INSERT INTO tblRole (code, name, is_system, level) VALUES (?, ?, 1, ?) ON DUPLICATE KEY UPDATE name = VALUES(name), level = VALUES(level)',
+            [code, ROLE_LABELS[code], ROLE_LEVEL[code]],
+        );
         const role = await queryOne<{ id: number }>('SELECT id FROM tblRole WHERE code = ?', [code]);
         if (!role) continue;
         const existing = await queryOne<{ n: number }>('SELECT COUNT(*) AS n FROM tblRolePermission WHERE role_id = ?', [role.id]);
@@ -41,6 +48,11 @@ export async function seedRbac(resetPermissions: boolean) {
             await execute('INSERT IGNORE INTO tblRolePermission (role_id, permission_id) SELECT ?, id FROM tblPermission WHERE code IN (?)', [role.id, perms]);
         }
     }
+    await execute(
+        `INSERT IGNORE INTO tblRolePermission (role_id, permission_id)
+         SELECT r.id, p.id FROM tblRole r JOIN tblPermission p ON p.code = 'roles.manage'
+          WHERE r.code IN ('SUPER_ADMIN', 'STUDIO_OWNER', 'COMPANY_ADMIN')`,
+    );
 }
 
 export async function ensureUser(u: { role: RoleCode; name: string; email: string; phone: string | null }, password: string): Promise<number> {
