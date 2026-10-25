@@ -54,6 +54,7 @@ export const TABLE_PK: Record<string, string> = {
     tblselectionsubmission: 'selectionSubmissionID',
     tblservice: 'serviceID',
     tblstaff: 'staffID',
+    tblstaffdocument: 'staffDocumentID',
     tblsupportmessage: 'supportMessageID',
     tblsupportticket: 'supportTicketID',
     tbltestimonial: 'testimonialID',

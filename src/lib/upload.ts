@@ -20,6 +20,18 @@ export const imageUpload = multer({
     fileFilter: imageFilter,
 });
 
+export const DOCUMENT_MIME = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
+
+/** ID proofs, certificates and contracts for staff records. */
+export const documentUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 10 * 1024 * 1024, files: 1 },
+    fileFilter: (_req, file, cb) => {
+        if (DOCUMENT_MIME.includes(file.mimetype) && /\.(pdf|jpe?g|png|webp)$/i.test(file.originalname)) cb(null, true);
+        else cb(badRequest(`"${file.originalname}" is not supported. Upload a PDF, JPG, PNG or WebP file.`) as unknown as Error);
+    },
+});
+
 export const proofUpload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: config.maxUploadBytes, files: 80 },

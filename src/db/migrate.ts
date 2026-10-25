@@ -82,7 +82,8 @@ export async function runMigrations(options: { reset?: boolean; log?: boolean; d
                 } catch (err) {
                     const code = (err as { errno?: number }).errno;
                     // Duplicate column, duplicate key, or table left behind by a failed attempt
-                    if (code === 1050 || code === 1060 || code === 1061) continue;
+                    // 1054 unknown column: 005 uses `id` but PKs may already be userID/companyID — use 007 instead
+                    if (code === 1050 || code === 1060 || code === 1061 || code === 1062 || code === 1826 || (file === '005_user_company_role.sql' && code === 1054)) continue;
                     throw err;
                 }
             }

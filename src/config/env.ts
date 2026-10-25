@@ -35,6 +35,8 @@ const schema = z.object({
     SIGNED_URL_TTL_SECONDS: z.coerce.number().int().min(30).max(86400).default(300),
 
     PAYMENT_PROVIDER: z.enum(['razorpay', 'devpay']).default('razorpay'),
+    /** Allow devpay checkout while NODE_ENV=production (local/staging only — never on public prod without Razorpay). */
+    ALLOW_DEVPAY: bool,
     RAZORPAY_KEY_ID: z.string().optional().default(''),
     RAZORPAY_KEY_SECRET: z.string().optional().default(''),
     RAZORPAY_WEBHOOK_SECRET: z.string().optional().default(''),
@@ -84,8 +86,8 @@ if (!parsed.success) {
 const env = parsed.data;
 
 if (env.NODE_ENV === 'production') {
-    if (env.PAYMENT_PROVIDER === 'devpay') {
-        throw new Error('PAYMENT_PROVIDER=devpay is not allowed in production. Configure Razorpay.');
+    if (env.PAYMENT_PROVIDER === 'devpay' && !env.ALLOW_DEVPAY) {
+        throw new Error('PAYMENT_PROVIDER=devpay is not allowed in production unless ALLOW_DEVPAY=true. Configure Razorpay for live payments.');
     }
     if (
         env.PAYMENT_PROVIDER === 'razorpay' &&

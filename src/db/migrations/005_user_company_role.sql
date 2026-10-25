@@ -1,3 +1,7 @@
+-- Legacy migration for databases that still use `id` as the primary key on tblUser/tblCompany.
+-- If primary keys were renamed to userID/companyID before this file runs, skip via migrate.ts (errno 1054).
+-- Renamed databases are handled by 007_user_company_role_pk.sql or scripts/apply-user-company-migration.ts.
+
 ALTER TABLE tblUser ADD COLUMN company_id INT UNSIGNED NULL AFTER id;
 ALTER TABLE tblUser ADD COLUMN role_id INT UNSIGNED NULL AFTER company_id;
 

@@ -168,14 +168,14 @@ export async function ensureCompanyPlatformSchema() {
     for (const sql of alters) await ignoreSchemaError(sql);
     await ignoreSchemaError(
         `CREATE TABLE IF NOT EXISTS tblCompanySignup (
-            companySignupID INT UNSIGNED NOT NULL AUTO_INCREMENT,
+            id INT UNSIGNED NOT NULL AUTO_INCREMENT,
             payload MEDIUMTEXT NOT NULL,
             amount_paise INT UNSIGNED NOT NULL,
             provider_order_id VARCHAR(80) NOT NULL,
             status ENUM('PENDING', 'PAID') NOT NULL DEFAULT 'PENDING',
             company_id INT UNSIGNED NULL,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (companySignupID),
+            PRIMARY KEY (id),
             UNIQUE KEY uq_signup_order (provider_order_id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
     );
@@ -188,8 +188,8 @@ export async function registrationPhoneTaken(phone: string): Promise<boolean> {
     const digits = phoneDigits(phone);
     if (!/^\d{10}$/.test(digits)) return false;
     const normalized = "RIGHT(REPLACE(REPLACE(REPLACE(IFNULL(phone, ''), ' ', ''), '-', ''), '+', ''), 10)";
-    const company = await platformQueryOne(`SELECT companyID FROM tblCompany WHERE phone IS NOT NULL AND ${normalized} = ? LIMIT 1`, [digits]);
-    const user = await platformQueryOne(`SELECT userID FROM tblUser WHERE deleted_at IS NULL AND phone IS NOT NULL AND ${normalized} = ? LIMIT 1`, [digits]);
+    const company = await platformQueryOne(`SELECT id FROM tblCompany WHERE phone IS NOT NULL AND ${normalized} = ? LIMIT 1`, [digits]);
+    const user = await platformQueryOne(`SELECT id FROM tblUser WHERE deleted_at IS NULL AND phone IS NOT NULL AND ${normalized} = ? LIMIT 1`, [digits]);
     return Boolean(company || user);
 }
 
@@ -391,7 +391,7 @@ export async function completeCompanySignup(input: { signupId: number; providerO
     try {
         await openInstance(saved, databaseName, slug);
     } catch (err) {
-        await platformExecute('DELETE FROM tblCompany WHERE companyID = ?', [inserted.insertId]);
+        await platformExecute('DELETE FROM tblCompany WHERE id = ?', [inserted.insertId]);
         if (/^[a-z0-9_]+$/.test(databaseName) && databaseName !== platformDatabaseName()) {
             await platformExecute(`DROP DATABASE IF EXISTS \`${databaseName}\``).catch(() => undefined);
         }

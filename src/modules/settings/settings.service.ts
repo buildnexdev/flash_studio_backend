@@ -100,6 +100,9 @@ export const settingSchemas = {
             .optional()
             .default([]),
     }),
+    subscription: z.object({
+        enabledModules: z.array(z.string().max(40)).default([]),
+    }),
 };
 
 export type SettingKey = keyof typeof settingSchemas;
@@ -176,6 +179,7 @@ export const DEFAULT_SETTINGS: Settings = {
             },
         ],
     },
+    subscription: { enabledModules: [] },
 };
 
 export const PUBLIC_SETTING_KEYS: SettingKey[] = ['studio', 'website'];

@@ -129,5 +129,25 @@ class DevPayProvider implements PaymentProvider {
     }
 }
 
-export const paymentProvider: PaymentProvider = config.PAYMENT_PROVIDER === 'devpay' ? new DevPayProvider() : new RazorpayProvider();
+function createPaymentProvider(): PaymentProvider {
+    const hasRazorpay = Boolean(config.RAZORPAY_KEY_ID && config.RAZORPAY_KEY_SECRET);
+    if (config.PAYMENT_PROVIDER === 'devpay' || config.ALLOW_DEVPAY) {
+        if (config.PAYMENT_PROVIDER === 'devpay' && config.isProd && !config.ALLOW_DEVPAY) {
+            throw new Error('PAYMENT_PROVIDER=devpay requires ALLOW_DEVPAY=true when NODE_ENV=production.');
+        }
+        if (!hasRazorpay || config.PAYMENT_PROVIDER === 'devpay') {
+            if (config.isProd) console.warn('[photolab] Using devpay test gateway (ALLOW_DEVPAY). Configure Razorpay before go-live.');
+            else console.warn('[photolab] Razorpay keys missing — using devpay test gateway.');
+            return new DevPayProvider();
+        }
+    }
+    if (hasRazorpay) return new RazorpayProvider();
+    if (!config.isProd) {
+        console.warn('[photolab] Razorpay keys missing — using devpay test gateway.');
+        return new DevPayProvider();
+    }
+    return new RazorpayProvider();
+}
+
+export const paymentProvider: PaymentProvider = createPaymentProvider();
 export const devPay = paymentProvider instanceof DevPayProvider ? paymentProvider : null;

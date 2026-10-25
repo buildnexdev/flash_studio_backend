@@ -5,6 +5,7 @@ import compression from 'compression';
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import express, { type Request } from 'express';
+import path from 'node:path';
 import helmet from 'helmet';
 import { config } from './config/env.js';
 import { pool } from './db/pool.js';
@@ -112,6 +113,8 @@ export function createApp() {
     );
     app.use(express.urlencoded({ extended: false, limit: '1mb' }));
 
+    app.use('/brand', express.static(path.join(process.cwd(), 'public'), { maxAge: '7d', index: false }));
+
     app.get('/api/health', async (_req, res) => {
         let database = 'up';
         try {
@@ -154,7 +157,7 @@ export function createApp() {
     app.use('/api/portal', portalRouter);
     app.use('/api/ai', aiRoutes);
 
-    app.get('/api', (_req, res) => ok(res, { name: 'Photo Studio Digital Platform API', brand: 'BuildNexDev', version: '1.0.0' }));
+    app.get('/api', (_req, res) => ok(res, { name: 'Nammaqr Photography API', brand: 'Nammaqr', version: '1.0.0' }));
     app.use(notFoundHandler);
     app.use(errorHandler);
     return app;

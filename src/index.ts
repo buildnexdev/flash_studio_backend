@@ -4,6 +4,7 @@
 import { createServer } from 'node:http';
 import { createApp } from './app.js';
 import { config } from './config/env.js';
+import { renamePrimaryKeys } from './db/primary-keys.js';
 import { ensureFlashStudio } from './db/seed.js';
 import { closePool, pool } from './db/pool.js';
 import { getIo, initRealtime } from './lib/realtime.js';
@@ -13,6 +14,9 @@ async function main() {
     await pool.query('SELECT 1').catch((err: Error) => {
         throw new Error(`Cannot connect to MySQL (${err.message}). Check DATABASE_URL and run "npm run db:migrate".`);
     });
+
+    const renamed = await renamePrimaryKeys(pool, true);
+    if (renamed.length) console.log(`[photolab] primary keys aligned (${renamed.length} table(s))`);
 
     const flash = await ensureFlashStudio().catch((err: { errno?: number; message?: string }) => {
         if (err.errno === 1146) {
