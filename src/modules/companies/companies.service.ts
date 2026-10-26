@@ -17,6 +17,9 @@ export interface CompanyInput {
     phone?: string | null;
     city?: string | null;
     tagline?: string | null;
+    companyEmail?: string | null;
+    about?: string | null;
+    modules?: string[] | null;
 }
 
 const slugify = (name: string) =>
@@ -92,10 +95,12 @@ export async function createCompany(input: CompanyInput) {
         );
     });
 
+    const companyEmail = (input.companyEmail || input.ownerEmail).trim().toLowerCase();
+    const modulesStr = input.modules && input.modules.length ? input.modules.join(',') : null;
     const res = await platformExecute(
-        `INSERT INTO tblCompany (name, slug, database_name, status, email, phone, city, owner_name, owner_email, is_primary)
-         VALUES (?, ?, ?, 'ACTIVE', ?, ?, ?, ?, ?, 0)`,
-        [input.name.trim(), slug, databaseName, input.ownerEmail.trim().toLowerCase(), input.phone?.trim() || null, input.city?.trim() || null, input.ownerName.trim(), input.ownerEmail.trim().toLowerCase()],
+        `INSERT INTO tblCompany (name, slug, database_name, status, email, phone, city, owner_name, owner_email, is_primary, about_us, modules)
+         VALUES (?, ?, ?, 'ACTIVE', ?, ?, ?, ?, ?, 0, ?, ?)`,
+        [input.name.trim(), slug, databaseName, companyEmail, input.phone?.trim() || null, input.city?.trim() || null, input.ownerName.trim(), input.ownerEmail.trim().toLowerCase(), input.about?.trim() || null, modulesStr],
     );
     return {
         id: res.insertId,

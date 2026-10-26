@@ -55,11 +55,22 @@ export async function findSlotClashes(input: SlotInput, db?: Db): Promise<Clash[
     ];
 }
 
+function formatTime12(t: string): string {
+    const parts = String(t).slice(0, 5).split(':');
+    const h = parseInt(parts[0], 10);
+    const m = parts[1] || '00';
+    if (isNaN(h)) return t;
+    const period = h >= 12 ? 'PM' : 'AM';
+    const hour12 = h % 12 === 0 ? 12 : h % 12;
+    return `${hour12}:${m} ${period}`;
+}
+
 export async function assertSlotFree(input: SlotInput, db?: Db): Promise<void> {
     const clashes = await findSlotClashes(input, db);
     if (!clashes.length) return;
     const first = clashes[0];
-    throw new AppError(409, `That time overlaps ${first.label} (${String(first.start_time).slice(0, 5)}-${String(first.end_time).slice(0, 5)}). Choose another slot.`, [
+    throw new AppError(409, `That time overlaps ${first.label} (${formatTime12(first.start_time)} – ${formatTime12(first.end_time)}). Choose another slot.`, [
         { field: 'eventDate', message: 'This date and time is already booked' },
     ], 'CONFLICT');
 }
+

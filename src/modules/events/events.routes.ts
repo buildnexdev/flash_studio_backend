@@ -26,6 +26,7 @@ const eventBody = z.object({
     endTime: hhmm,
     venue: optionalText(255),
     notes: optionalText(3000),
+    force: z.boolean().optional(),
 });
 
 const router = Router();

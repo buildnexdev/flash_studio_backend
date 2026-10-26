@@ -29,6 +29,7 @@ export interface EventInput {
     endTime?: string | null;
     venue?: string | null;
     notes?: string | null;
+    force?: boolean;
 }
 
 /** Staff with events.view/manage see everything; photographers/editors only events they are assigned to; customers only their own. */
@@ -57,7 +58,9 @@ export async function createEvent(input: EventInput, ctx: AuditContext, conn?: P
     const run = async (db: PoolConnection) => {
         const customer = await queryOne('SELECT id FROM tblCustomer WHERE id = ? AND deleted_at IS NULL', [input.customerId], db);
         if (!customer) throw badRequest('Customer not found.', [{ field: 'customerId', message: 'Not found' }]);
-        await assertSlotFree({ eventDate: input.eventDate, startTime: input.startTime, endTime: input.endTime, excludeBookingId: input.bookingId ?? null }, db);
+        if (!input.force) {
+            await assertSlotFree({ eventDate: input.eventDate, startTime: input.startTime, endTime: input.endTime, excludeBookingId: input.bookingId ?? null }, db);
+        }
         const code = await nextNumber('event', db);
         const res = await execute(
             `INSERT INTO tblEvent (event_code, booking_id, customer_id, title, event_type, event_date, start_time, end_time, venue, notes, created_by)
@@ -193,7 +196,9 @@ export async function updateEvent(id: number, input: EventInput, ctx: AuditConte
     const current = await queryOne<{ status: EventStatus }>('SELECT status FROM tblEvent WHERE id = ? AND deleted_at IS NULL', [id]);
     if (!current) throw notFound('Event');
     if (current.status === 'CANCELLED') throw conflict('A cancelled event cannot be edited.');
-    await assertSlotFree({ eventDate: input.eventDate, startTime: input.startTime, endTime: input.endTime, excludeEventId: id, excludeBookingId: input.bookingId ?? null });
+    if (!input.force) {
+        await assertSlotFree({ eventDate: input.eventDate, startTime: input.startTime, endTime: input.endTime, excludeEventId: id, excludeBookingId: input.bookingId ?? null });
+    }
     await execute('UPDATE tblEvent SET customer_id = ?, title = ?, event_type = ?, event_date = ?, start_time = ?, end_time = ?, venue = ?, notes = ? WHERE id = ?', [
         input.customerId,
         input.title,
