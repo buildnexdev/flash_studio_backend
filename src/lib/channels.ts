@@ -29,7 +29,13 @@ function mailer(): Transporter | null {
 
 const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 
-export async function sendEmail(to: string, subject: string, text: string, link?: string): Promise<ChannelResult> {
+export async function sendEmail(
+    to: string,
+    subject: string,
+    text: string,
+    link?: string,
+    attachments?: { filename: string; content: Buffer; contentType: string }[],
+): Promise<ChannelResult> {
     const t = mailer();
     if (!t) return { sent: false, reason: 'SMTP not configured' };
     if (config.isTest) return { sent: false, reason: 'test mode' };
@@ -42,7 +48,7 @@ export async function sendEmail(to: string, subject: string, text: string, link?
         <p style="margin:24px 0 0;font-size:12px;color:#78716c">${escapeHtml(BRAND_NAME)}</p>
     </div>`;
     try {
-        await t.sendMail({ from: config.MAIL_FROM, to, subject, text: url ? `${text}\n\n${url}` : text, html });
+        await t.sendMail({ from: config.MAIL_FROM, to, subject, text: url ? `${text}\n\n${url}` : text, html, attachments });
         return { sent: true };
     } catch (err) {
         console.error('[email] send failed', (err as Error).message);

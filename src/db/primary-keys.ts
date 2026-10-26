@@ -19,6 +19,7 @@ export const TABLE_PK: Record<string, string> = {
     tbldownload: 'downloadID',
     tbleditor: 'editorID',
     tblevent: 'eventID',
+    tbleventaccess: 'eventAccessID',
     tbleventstaff: 'eventStaffID',
     tblfinancetransaction: 'financeTransactionID',
     tblgallery: 'galleryID',

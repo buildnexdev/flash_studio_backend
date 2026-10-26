@@ -13,6 +13,7 @@ import { asyncHandler, clientIp, created, ok, userAgent } from '../../utils/http
 import { optionalText } from '../../utils/schemas.js';
 import { faceSearchEnabled, searchBySelfie } from '../ai/ai.service.js';
 import { auditCtx } from '../audit/audit.service.js';
+import { assertFaceSearchAllowed, readEventPhone, requestEventOtp, verifyEventOtp } from './event-access.js';
 import { createOrder } from '../orders/orders.service.js';
 import { listGalleryPhotos, openGalleryPhoto } from '../photos/photos.service.js';
 import * as selections from '../selections/selections.service.js';
@@ -24,7 +25,16 @@ const router = Router();
 
 const gParams = z.object({ galleryId: z.coerce.number().int().positive() });
 const photoParams = gParams.extend({ photoId: z.coerce.number().int().positive() });
-const access = (req: Request) => resolveAccess(Number(req.params.galleryId), req.user, req.gallery);
+const access = async (req: Request) => {
+    const a = await resolveAccess(Number(req.params.galleryId), req.user, req.gallery);
+    const gallerySettings = await getSetting('gallery');
+    const claim = readEventPhone(typeof req.headers['x-event-phone'] === 'string' ? req.headers['x-event-phone'] : undefined);
+    const phoneVerified = !!claim && claim.eventId === a.gallery.event_id;
+    if (gallerySettings.requirePhoneVerification && !a.isOwner && !a.isStaff && !phoneVerified) {
+        throw forbidden('Verify your phone number to open this event gallery.');
+    }
+    return { ...a, phoneVerified, requirePhoneVerification: gallerySettings.requirePhoneVerification };
+};
 const requireUser = (req: Request) => {
     if (!req.user) throw unauthorized('Sign in to continue. Your gallery stays open after signing in.');
     return req.user;
@@ -90,6 +100,8 @@ router.get(
             albums,
             categories,
             faceSearch: await faceSearchEnabled(),
+            phoneVerification: a.requirePhoneVerification,
+            phoneVerified: a.phoneVerified || a.isOwner || a.isStaff,
             selection: await selections.mySelectionState(a, req.user),
             pricing: {
                 photoDownload: a.gallery.photo_price ?? pricing.photoDownload,
@@ -215,6 +227,26 @@ router.post(
 );
 
 router.post(
+    '/:galleryId/phone/request',
+    validate(gParams, 'params'),
+    validate(z.object({ phone: z.string().trim().min(10).max(20) })),
+    asyncHandler(async (req, res) => {
+        const a = await resolveAccess(Number(req.params.galleryId), req.user, req.gallery);
+        ok(res, await requestEventOtp(a.gallery.event_id, a.gallery.id, req.body.phone), 'Code sent if the number can receive messages');
+    }),
+);
+
+router.post(
+    '/:galleryId/phone/verify',
+    validate(gParams, 'params'),
+    validate(z.object({ phone: z.string().trim().min(10).max(20), code: z.string().regex(/^\d{6}$/), consent: z.boolean().default(false) })),
+    asyncHandler(async (req, res) => {
+        const a = await resolveAccess(Number(req.params.galleryId), req.user, req.gallery);
+        ok(res, await verifyEventOtp(a.gallery.event_id, a.gallery.id, req.body.phone, req.body.code, req.body.consent), 'Phone verified for this event');
+    }),
+);
+
+router.post(
     '/:galleryId/face-search',
     validate(gParams, 'params'),
     imageUpload.single('selfie'),
@@ -222,6 +254,9 @@ router.post(
         const a = await access(req);
         if (!(await faceSearchEnabled())) throw badRequest('Face search is not enabled for this studio.');
         if (!req.file) throw badRequest('Upload a clear selfie.', [{ field: 'selfie', message: 'Required' }]);
+        const consent = req.body.consent === true || req.body.consent === 'true' || req.body.consent === '1';
+        const proof = typeof req.body.proof === 'string' ? req.body.proof : typeof req.headers['x-event-phone'] === 'string' ? req.headers['x-event-phone'] : undefined;
+        await assertFaceSearchAllowed(a.gallery.event_id, proof, consent, a.isOwner || a.isStaff);
         const ids = await searchBySelfie(a.gallery.event_id, req.file.buffer);
         if (!ids.length) return ok(res, { items: [], total: 0, page: 1, pageSize: 200, totalPages: 0 }, 'No matching photos found. Try a clearer, front-facing selfie.');
         ok(res, await listGalleryPhotos(a, req.user, { page: 1, pageSize: 200, ids }), 'Photos matched to your selfie');

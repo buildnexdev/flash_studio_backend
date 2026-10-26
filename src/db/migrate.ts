@@ -1,6 +1,8 @@
-// Developer by: Buildnexdev.in
-// Devevloper : Nandhakumar@gmail.com
-// Last Edited : 06-10-2026
+/* 
+ * Developer by: Buildnexdev.in
+ * Devevloper : Nandhakumar@gmail.com
+ * Last Edited : 06-10-2026
+*/
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -27,6 +29,9 @@ function stripLeadingComments(chunk: string): string {
     return rest;
 }
 
+/*
+ * SPLIT THE URL INTO THE SERVER URL AND THE DATABASE NAME
+ */
 function splitUrl(url: string) {
     const parsed = new URL(url);
     const database = decodeURIComponent(parsed.pathname.replace(/^\//, ''));
@@ -35,6 +40,9 @@ function splitUrl(url: string) {
     return { serverUrl: parsed.toString(), database };
 }
 
+/*
+ * RUN THE MIGRATIONS
+ */
 export async function runMigrations(options: { reset?: boolean; log?: boolean; databaseUrl?: string } = {}): Promise<string[]> {
     const { serverUrl, database } = splitUrl(options.databaseUrl ?? config.DATABASE_URL);
     const log = options.log ?? true;
@@ -76,14 +84,21 @@ export async function runMigrations(options: { reset?: boolean; log?: boolean; d
                 .split(/;\s*(?:\r?\n|$)/)
                 .map(stripLeadingComments)
                 .filter((s) => s.length > 0);
+            let skipRest = false;
             for (const statement of statements) {
+                if (skipRest) break;
                 try {
                     await server.query(`${statement};`);
                 } catch (err) {
                     const code = (err as { errno?: number }).errno;
-                    // Duplicate column, duplicate key, or table left behind by a failed attempt
+                    // 007 targets renamed primary keys. A fresh database still uses `id` until the rename pass, and 005 already added the columns.
+                    if (file.startsWith('007_') && code === 1054) {
+                        skipRest = true;
+                        continue;
+                    }
+                        // Duplicate column, duplicate key, or table left behind by a failed attempt
                     // 1054 unknown column: 005 uses `id` but PKs may already be userID/companyID — use 007 instead
-                    if (code === 1050 || code === 1060 || code === 1061 || code === 1062 || code === 1826 || (file === '005_user_company_role.sql' && code === 1054)) continue;
+                    if (code === 1050 || code === 1060 || code === 1061 || code === 1022 || code === 1062 || code === 1826 || (file === '005_user_company_role.sql' && code === 1054)) continue;
                     throw err;
                 }
             }
@@ -99,6 +114,9 @@ export async function runMigrations(options: { reset?: boolean; log?: boolean; d
     }
 }
 
+/*
+ * CHECK IF THE MIGRATIONS ARE BEING RUN DIRECTLY
+ */
 const isDirectRun = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isDirectRun) {
     runMigrations({ reset: process.argv.includes('--reset') })

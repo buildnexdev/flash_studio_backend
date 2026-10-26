@@ -11,8 +11,10 @@ import { likeTerm, offsetOf, orderBy, paged } from '../../utils/pagination.js';
 import { toSqlDateTime } from '../../utils/dates.js';
 import { audit, type AuditContext } from '../audit/audit.service.js';
 import { notifyCustomer, notifyUser } from '../notifications/notifications.service.js';
+import { storage } from '../../lib/storage.js';
 import { ensureEventQr } from '../galleries/galleries.service.js';
 import { getSetting } from '../settings/settings.service.js';
+import { assertSlotFree, findSlotClashes, type SlotInput } from './availability.js';
 
 export const EVENT_STATUSES = ['UPCOMING', 'LIVE', 'UPLOADING', 'PROCESSING', 'COMPLETED', 'CANCELLED'] as const;
 export type EventStatus = (typeof EVENT_STATUSES)[number];
@@ -55,6 +57,7 @@ export async function createEvent(input: EventInput, ctx: AuditContext, conn?: P
     const run = async (db: PoolConnection) => {
         const customer = await queryOne('SELECT id FROM tblCustomer WHERE id = ? AND deleted_at IS NULL', [input.customerId], db);
         if (!customer) throw badRequest('Customer not found.', [{ field: 'customerId', message: 'Not found' }]);
+        await assertSlotFree({ eventDate: input.eventDate, startTime: input.startTime, endTime: input.endTime, excludeBookingId: input.bookingId ?? null }, db);
         const code = await nextNumber('event', db);
         const res = await execute(
             `INSERT INTO tblEvent (event_code, booking_id, customer_id, title, event_type, event_date, start_time, end_time, venue, notes, created_by)
@@ -157,7 +160,7 @@ export async function getEvent(id: number) {
                FROM tblEventStaff es JOIN tblUser u ON u.id = es.user_id WHERE es.event_id = ? ORDER BY es.role, u.name`,
             [id],
         ),
-        queryOne('SELECT id, title, status, watermark_enabled, allow_download, auto_publish, photo_price, expires_at FROM tblGallery WHERE event_id = ? AND deleted_at IS NULL ORDER BY id LIMIT 1', [id]),
+        queryOne('SELECT id, title, status, watermark_enabled, allow_download, auto_publish, photo_price, expires_at, cover_photo_id FROM tblGallery WHERE event_id = ? AND deleted_at IS NULL ORDER BY id LIMIT 1', [id]),
         query('SELECT status, COUNT(*) AS n FROM tblPhoto WHERE event_id = ? AND deleted_at IS NULL GROUP BY status', [id]),
         queryOne<{ booking_revenue: number; order_revenue: number }>(
             `SELECT
@@ -173,8 +176,10 @@ export async function getEvent(id: number) {
             [id, id, id],
         ),
     ]);
+    const row = e as { cover_key?: string | null };
     return {
         ...withPaymentStatus(e),
+        cover_url: row.cover_key ? await storage.signedUrl(row.cover_key) : null,
         staff,
         gallery,
         photos: Object.fromEntries(photoStats.map((r) => [r.status, r.n])),
@@ -188,6 +193,7 @@ export async function updateEvent(id: number, input: EventInput, ctx: AuditConte
     const current = await queryOne<{ status: EventStatus }>('SELECT status FROM tblEvent WHERE id = ? AND deleted_at IS NULL', [id]);
     if (!current) throw notFound('Event');
     if (current.status === 'CANCELLED') throw conflict('A cancelled event cannot be edited.');
+    await assertSlotFree({ eventDate: input.eventDate, startTime: input.startTime, endTime: input.endTime, excludeEventId: id, excludeBookingId: input.bookingId ?? null });
     await execute('UPDATE tblEvent SET customer_id = ?, title = ?, event_type = ?, event_date = ?, start_time = ?, end_time = ?, venue = ?, notes = ? WHERE id = ?', [
         input.customerId,
         input.title,
@@ -200,6 +206,21 @@ export async function updateEvent(id: number, input: EventInput, ctx: AuditConte
         id,
     ]);
     await audit(ctx, 'EVENT_UPDATED', 'events', id);
+    return getEvent(id);
+}
+
+export async function checkAvailability(input: SlotInput) {
+    const conflicts = await findSlotClashes(input);
+    return { available: conflicts.length === 0, conflicts };
+}
+
+export async function saveCover(id: number, image: Buffer, ctx: AuditContext) {
+    const event = await queryOne('SELECT id FROM tblEvent WHERE id = ? AND deleted_at IS NULL', [id]);
+    if (!event) throw notFound('Event');
+    const key = `events/${id}/cover.jpg`;
+    await storage.put(key, image, 'image/jpeg');
+    await execute('UPDATE tblEvent SET cover_key = ? WHERE id = ?', [key, id]);
+    await audit(ctx, 'EVENT_COVER_UPDATED', 'events', id);
     return getEvent(id);
 }
 

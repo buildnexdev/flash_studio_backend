@@ -12,6 +12,7 @@ import { nextNumber } from '../../utils/numbering.js';
 import { likeTerm, offsetOf, orderBy, paged } from '../../utils/pagination.js';
 import { audit, systemCtx, type AuditContext } from '../audit/audit.service.js';
 import { ensureEventForBooking } from '../events/events.service.js';
+import { ensureEventQr } from '../galleries/galleries.service.js';
 import { notifyCustomer, notifyStaff } from '../notifications/notifications.service.js';
 import { fulfilPaidOrder, inclusiveTax, notifyPrintTeam, type OrderType } from '../orders/orders.service.js';
 import { getSetting } from '../settings/settings.service.js';
@@ -129,7 +130,11 @@ async function applySuccess(paymentId: number, providerPaymentId: string | null,
         const customerUser = await queryOne<{ user_id: number | null }>('SELECT user_id FROM tblCustomer WHERE id = ?', [p.customer_id]);
         if (customerUser?.user_id) emitTo(rooms.user(customerUser.user_id), 'payment:success', { paymentId: p.id, orderId: p.order_id, bookingId: p.booking_id, photoIds: outcome.effects.photoIds });
         await notifyCustomer(p.customer_id, { type: 'PAYMENT_SUCCESS', title: 'Payment received', body: `We received ₹${(p.amount / 100).toFixed(2)} for ${outcome.effects.description}. Thank you!`, link: '/customer/payments' });
-        if (outcome.effects.confirmedBooking) await notifyCustomer(p.customer_id, { type: 'BOOKING_CONFIRMED', title: 'Booking confirmed', body: `${outcome.effects.description.replace('Advance for ', '')} is confirmed. We look forward to your event!`, link: '/customer/bookings' });
+        if (outcome.effects.confirmedBooking && p.booking_id) {
+            await notifyCustomer(p.customer_id, { type: 'BOOKING_CONFIRMED', title: 'Booking confirmed', body: `${outcome.effects.description.replace('Advance for ', '')} is confirmed. We look forward to your event!`, link: '/customer/bookings' });
+            const event = await queryOne<{ id: number }>('SELECT id FROM tblEvent WHERE booking_id = ? AND deleted_at IS NULL', [p.booking_id]);
+            if (event) await ensureEventQr(event.id, ctx);
+        }
         if (outcome.effects.hdUnlocked) await notifyCustomer(p.customer_id, { type: 'HD_UNLOCKED', title: 'HD downloads unlocked', body: `${outcome.effects.photoIds.length} photo(s) are ready to download in full resolution.`, link: '/customer/downloads', external: false });
         if (outcome.effects.orderNo && outcome.effects.physical) await notifyPrintTeam(outcome.effects.orderNo, p.order_id!);
         await notifyStaff(['payments.view'], { type: 'PAYMENT_SUCCESS', title: 'Payment received', body: `₹${(p.amount / 100).toFixed(2)} - ${outcome.effects.description}`, link: '/admin/payments' });
