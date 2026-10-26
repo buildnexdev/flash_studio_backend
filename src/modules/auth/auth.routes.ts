@@ -22,7 +22,7 @@ export const REFRESH_COOKIE = 'pl_rt';
 const cookieOptions = (expires?: Date): CookieOptions => ({
     httpOnly: true,
     secure: config.isProd,
-    sameSite: 'strict',
+    sameSite: config.isProd ? 'none' : 'lax',
     path: '/api/auth',
     ...(expires ? { expires } : {}),
 });
@@ -34,7 +34,7 @@ function sendSession(req: Request, res: Response, session: Awaited<ReturnType<ty
     const expires = new Date(session.refreshExpiresAt);
     res.cookie(REFRESH_COOKIE, session.refreshToken, cookieOptions(expires));
     if (session.studioSlug) {
-        res.cookie(STUDIO_COOKIE, session.studioSlug, { httpOnly: true, secure: config.isProd, sameSite: 'strict', path: '/api', expires });
+        res.cookie(STUDIO_COOKIE, session.studioSlug, { httpOnly: true, secure: config.isProd, sameSite: config.isProd ? 'none' : 'lax', path: '/api', expires });
     } else {
         res.clearCookie(STUDIO_COOKIE, { path: '/api' });
     }
