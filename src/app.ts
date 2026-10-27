@@ -70,6 +70,14 @@ export function createApp() {
     // Behind Nginx / a load balancer: trust the first proxy for req.ip and secure cookies.
     app.set('trust proxy', 1);
 
+    app.use((req, _res, next) => {
+        const queryAt = req.url.indexOf('?');
+        const pathOnly = queryAt === -1 ? req.url : req.url.slice(0, queryAt);
+        const query = queryAt === -1 ? '' : req.url.slice(queryAt);
+        if (pathOnly.includes('//')) req.url = pathOnly.replace(/\/{2,}/g, '/') + query;
+        next();
+    });
+
     app.use(
         helmet({
             contentSecurityPolicy: false, // API only; the web app sets its own CSP
@@ -122,7 +130,22 @@ export function createApp() {
         } catch {
             database = 'down';
         }
-        res.status(database === 'up' ? 200 : 503).json({ success: database === 'up', message: database === 'up' ? 'OK' : 'Database unavailable', data: { database, uptime: Math.round(process.uptime()) } });
+        res.status(database === 'up' ? 200 : 503).json({
+            success: database === 'up',
+            message: database === 'up' ? 'OK' : 'Database unavailable',
+            data: {
+                database,
+                uptime: Math.round(process.uptime()),
+                storage: config.storageDriver,
+                s3: {
+                    ready: config.s3Ready,
+                    bucket: Boolean(config.AWS_BUCKET),
+                    accessKey: Boolean(config.AWS_ACCESS_KEY),
+                    secretKey: Boolean(config.AWS_SECRET_KEY),
+                    region: config.AWS_REGION,
+                },
+            },
+        });
     });
 
     app.use(bindTenant);
