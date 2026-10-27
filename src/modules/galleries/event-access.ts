@@ -53,12 +53,16 @@ export async function assertEventCustomerPhone(eventId: number, phoneRaw: string
 export async function claimEventCustomer(eventId: number, galleryId: number, phoneRaw: string) {
     const phone = await assertEventCustomerPhone(eventId, phoneRaw);
     const expires = new Date(Date.now() + ACCESS_HOURS * 3_600_000);
-    await execute('INSERT INTO tblEventAccess (event_id, gallery_id, phone, consent, verified_at, expires_at) VALUES (?, ?, ?, 0, UTC_TIMESTAMP(), ?)', [
-        eventId,
-        galleryId,
-        phone,
-        toSqlDateTime(expires),
-    ]);
+    try {
+        await execute('INSERT INTO tblEventAccess (event_id, gallery_id, phone, consent, verified_at, expires_at) VALUES (?, ?, ?, 0, UTC_TIMESTAMP(), ?)', [
+            eventId,
+            galleryId,
+            phone,
+            toSqlDateTime(expires),
+        ]);
+    } catch (err) {
+        console.error('[event-access] could not record phone claim', err instanceof Error ? err.message : err);
+    }
     return { verified: true, phone, proof: signEventPhone(eventId, phone), expiresAt: expires.toISOString() };
 }
 
@@ -96,13 +100,17 @@ export async function verifyEventOtp(eventId: number, galleryId: number, phoneRa
     }
     await execute('UPDATE tblOtpCode SET consumed_at = UTC_TIMESTAMP() WHERE id = ?', [row.id]);
     const expires = new Date(Date.now() + ACCESS_HOURS * 3_600_000);
-    await execute('INSERT INTO tblEventAccess (event_id, gallery_id, phone, consent, verified_at, expires_at) VALUES (?, ?, ?, ?, UTC_TIMESTAMP(), ?)', [
-        eventId,
-        galleryId,
-        phone,
-        consent ? 1 : 0,
-        toSqlDateTime(expires),
-    ]);
+    try {
+        await execute('INSERT INTO tblEventAccess (event_id, gallery_id, phone, consent, verified_at, expires_at) VALUES (?, ?, ?, ?, UTC_TIMESTAMP(), ?)', [
+            eventId,
+            galleryId,
+            phone,
+            consent ? 1 : 0,
+            toSqlDateTime(expires),
+        ]);
+    } catch (err) {
+        console.error('[event-access] could not record phone verify', err instanceof Error ? err.message : err);
+    }
     return { verified: true, phone, proof: signEventPhone(eventId, phone), expiresAt: expires.toISOString() };
 }
 
