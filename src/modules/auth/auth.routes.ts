@@ -26,6 +26,7 @@ const cookieOptions = (expires?: Date): CookieOptions => ({
     httpOnly: true,
     secure: crossSite,
     sameSite: crossSite ? 'none' : 'lax',
+    partitioned: crossSite,
     path: '/api/auth',
     ...(expires ? { expires } : {}),
 });
@@ -34,6 +35,7 @@ const studioCookieOptions = (expires?: Date): CookieOptions => ({
     httpOnly: true,
     secure: crossSite,
     sameSite: crossSite ? 'none' : 'lax',
+    partitioned: crossSite,
     path: '/api',
     ...(expires ? { expires } : {}),
 });
