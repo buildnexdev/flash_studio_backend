@@ -31,7 +31,10 @@ const access = async (req: Request) => {
     const gallerySettings = await getSetting('gallery');
     const claim = readEventPhone(typeof req.headers['x-event-phone'] === 'string' ? req.headers['x-event-phone'] : undefined);
     let phoneVerified = !!claim && claim.eventId === a.gallery.event_id;
-    if (!a.isOwner && !a.isStaff) {
+    // Public /g/ links always carry a gallery session. Those must match the event customer phone,
+    // even if a studio staff account is signed in in the same browser.
+    const guestLink = !!req.gallery;
+    if (guestLink || (!a.isOwner && !a.isStaff)) {
         if (!claim || claim.eventId !== a.gallery.event_id) {
             throw forbidden('Enter the phone number for this event.', [], 'PHONE_REQUIRED');
         }
