@@ -35,8 +35,13 @@ async function main() {
     server.listen(config.PORT, () => {
         const storageLabel = storage.name === 's3' ? `s3 bucket ${config.AWS_BUCKET} (${config.AWS_REGION})` : 'local disk';
         console.log(`[photolab] API listening on ${config.BACKEND_URL} (port ${config.PORT}, ${config.NODE_ENV}, storage: ${storageLabel})`);
-        if (config.isProd && storage.name === 'local') {
-            console.warn('[photolab] STORAGE_DRIVER is local. Set STORAGE_DRIVER=s3, AWS_S3_BUCKET, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and AWS_REGION to the bucket region.');
+        if (storage.name === 'local') {
+            const missing = [
+                !config.AWS_BUCKET ? 'AWS_S3_BUCKET' : '',
+                !config.AWS_ACCESS_KEY ? 'AWS_ACCESS_KEY_ID' : '',
+                !config.AWS_SECRET_KEY ? 'AWS_SECRET_ACCESS_KEY' : '',
+            ].filter(Boolean);
+            console.warn(`[photolab] storage is local disk. Missing S3 settings: ${missing.join(', ') || 'none'}. Set STORAGE_DRIVER=s3 as well.`);
         }
     });
 

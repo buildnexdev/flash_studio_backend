@@ -21,7 +21,7 @@ const schema = z.object({
     REFRESH_TOKEN_DAYS: z.coerce.number().int().positive().default(30),
 
     FRONTEND_URL: z.string().url().default('http://localhost:5173'),
-    BACKEND_URL: z.string().url().default('http://localhost:4000'),
+    BACKEND_URL: z.string().url().default('http://localhost:4000').transform((value) => value.replace(/\/+$/, '')),
     CORS_ORIGINS: z.string().optional().default(''),
 
     STORAGE_DRIVER: z.enum(['local', 's3']).default('local'),
@@ -69,12 +69,17 @@ const schema = z.object({
     UPLOAD_CONCURRENCY: z.coerce.number().int().min(1).max(8).default(2),
 });
 
+const clean = (value?: string) => (value ?? '').trim().replace(/^['"]|['"]$/g, '');
+
 /** Accept common AWS / Render env names alongside our documented keys. */
 const envSource = {
     ...process.env,
-    AWS_ACCESS_KEY: process.env.AWS_ACCESS_KEY || process.env.AWS_ACCESS_KEY_ID || '',
-    AWS_SECRET_KEY: process.env.AWS_SECRET_KEY || process.env.AWS_SECRET_ACCESS_KEY || '',
-    AWS_BUCKET: process.env.AWS_BUCKET || process.env.AWS_S3_BUCKET || '',
+    NODE_ENV: process.env.NODE_ENV || (process.env.RENDER === 'true' ? 'production' : undefined),
+    AWS_ACCESS_KEY: clean(process.env.AWS_ACCESS_KEY) || clean(process.env.AWS_ACCESS_KEY_ID),
+    AWS_SECRET_KEY: clean(process.env.AWS_SECRET_KEY) || clean(process.env.AWS_SECRET_ACCESS_KEY),
+    AWS_BUCKET: clean(process.env.AWS_BUCKET) || clean(process.env.AWS_S3_BUCKET) || clean(process.env.S3_BUCKET) || clean(process.env.AWS_BUCKET_NAME),
+    AWS_REGION: clean(process.env.AWS_REGION) || clean(process.env.AWS_DEFAULT_REGION) || 'ap-south-1',
+    STORAGE_DRIVER: clean(process.env.STORAGE_DRIVER).toLowerCase() || undefined,
 };
 
 const parsed = schema.safeParse(envSource);
@@ -106,8 +111,9 @@ export const config = {
     ...env,
     isProd: env.NODE_ENV === 'production',
     isTest: env.NODE_ENV === 'test',
-    /** Production uses S3 when the bucket and keys are set, even if STORAGE_DRIVER was left as local. */
-    storageDriver: (env.STORAGE_DRIVER === 's3' || (env.NODE_ENV === 'production' && s3Ready) ? 's3' : 'local') as 'local' | 's3',
+    /** Use S3 whenever the bucket and both keys are set. Local disk is only the fallback. */
+    storageDriver: (env.STORAGE_DRIVER === 's3' || s3Ready ? 's3' : 'local') as 'local' | 's3',
+    s3Ready,
     corsOrigins: [env.FRONTEND_URL, ...env.CORS_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean)],
     maxUploadBytes: env.MAX_UPLOAD_MB * 1024 * 1024,
 };
