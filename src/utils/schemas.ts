@@ -16,8 +16,8 @@ export const email = z.string().trim().toLowerCase().email('Enter a valid email'
 export const phone = z
     .string()
     .trim()
-    .regex(/^\+?[0-9\s-]{8,16}$/, 'Enter a valid phone number')
-    .transform((v) => v.replace(/[\s-]/g, ''));
+    .transform((v) => v.replace(/\D/g, ''))
+    .refine((v) => /^\d{10}$/.test(v), 'Enter a 10-digit phone number');
 
 export const optionalText = (max: number) =>
     z

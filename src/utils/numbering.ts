@@ -11,6 +11,8 @@ const PREFIX = {
     order: 'OR',
     payment: 'PY',
     invoice: 'INV',
+    asset: 'AST',
+    payroll: 'PR',
 } as const;
 
 const TABLES: Record<keyof typeof PREFIX, [string, string]> = {
@@ -20,6 +22,8 @@ const TABLES: Record<keyof typeof PREFIX, [string, string]> = {
     order: ['tblOrder', 'order_no'],
     payment: ['tblPayment', 'payment_no'],
     invoice: ['tblInvoice', 'invoice_no'],
+    asset: ['tblAsset', 'asset_code'],
+    payroll: ['tblPayrollEntry', 'payroll_no'],
 };
 
 /**

@@ -15,7 +15,10 @@ import { customerEvents } from '../events/events.service.js';
 import { customerGalleries } from '../galleries/galleries.service.js';
 import { listNotifications, markRead } from '../notifications/notifications.service.js';
 import { dashboard, report, REPORT_TYPES, toCsv, type ReportType } from '../reports/reports.service.js';
-import { getSettings, settingSchemas, updateSetting, type SettingKey } from '../settings/settings.service.js';
+import { storage } from '../../lib/storage.js';
+import { imageUpload } from '../../lib/upload.js';
+import { getSetting, getSettings, settingSchemas, updateSetting, type SettingKey } from '../settings/settings.service.js';
+import { badRequest } from '../../utils/errors.js';
 
 /* ---------------- Notifications: /api/notifications ---------------- */
 
@@ -73,7 +76,33 @@ settingsRouter.get(
     '/',
     requirePermission('settings.manage', 'pricing.manage'),
     asyncHandler(async (_req, res) => {
-        ok(res, await getSettings());
+        const settings = await getSettings();
+        const logoKey = settings.gallery.watermarkLogoKey;
+        ok(res, {
+            ...settings,
+            gallery: {
+                ...settings.gallery,
+                watermarkLogoUrl: logoKey ? await storage.signedUrl(logoKey, { ttlSeconds: 3600 }).catch(() => null) : null,
+            },
+        });
+    }),
+);
+
+settingsRouter.post(
+    '/gallery/watermark-logo',
+    requirePermission('settings.manage'),
+    imageUpload.single('logo'),
+    asyncHandler(async (req, res) => {
+        const file = req.file;
+        if (!file?.buffer?.length) throw badRequest('Choose a logo image to upload.');
+        const ext = file.mimetype === 'image/png' ? 'png' : file.mimetype === 'image/webp' ? 'webp' : 'jpg';
+        const key = `settings/watermark-logo.${ext}`;
+        const prev = await getSetting('gallery');
+        if (prev.watermarkLogoKey && prev.watermarkLogoKey !== key) await storage.delete(prev.watermarkLogoKey).catch(() => undefined);
+        await storage.put(key, file.buffer, file.mimetype);
+        const value = await updateSetting('gallery', { ...prev, watermarkLogoKey: key, watermarkUseLogo: true }, req.user!.id);
+        await audit(auditCtx(req), 'SETTINGS_UPDATED', 'settings', 'gallery', { watermarkLogo: true });
+        ok(res, { ...value, watermarkLogoUrl: await storage.signedUrl(key, { ttlSeconds: 3600 }) }, 'Company logo watermark saved');
     }),
 );
 
@@ -84,7 +113,12 @@ settingsRouter.put(
         const key = req.params.key as SettingKey;
         const allowed = key === 'pricing' || key === 'website' ? hasPermission(req.user, 'pricing.manage', 'settings.manage') : hasPermission(req.user, 'settings.manage');
         if (!allowed) throw forbidden();
-        const value = await updateSetting(key, req.body, req.user!.id);
+        let body = req.body;
+        if (key === 'gallery') {
+            const prev = await getSetting('gallery');
+            body = { ...prev, ...req.body, watermarkLogoKey: req.body.watermarkLogoKey ?? prev.watermarkLogoKey ?? null };
+        }
+        const value = await updateSetting(key, body, req.user!.id);
         await audit(auditCtx(req), 'SETTINGS_UPDATED', 'settings', key);
         ok(res, value, 'Settings saved');
     }),

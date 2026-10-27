@@ -29,6 +29,8 @@ import { deliveryRouter, printingRouter, proofsRouter } from './modules/producti
 import publicRoutes from './modules/public/public.routes.js';
 import selectionRoutes from './modules/selections/selections.routes.js';
 import assetRoutes from './modules/system/asset.routes.js';
+import payrollRoutes from './modules/system/payroll.routes.js';
+import closingRoutes from './modules/system/closing.routes.js';
 import { auditRouter, notificationsRouter, portalRouter, reportsRouter, settingsRouter } from './modules/system/system.routes.js';
 import userRoutes from './modules/users/users.routes.js';
 import companyRoutes from './modules/companies/companies.routes.js';
@@ -164,6 +166,8 @@ export function createApp() {
     app.use('/api/bookings', bookingRoutes);
     app.use('/api/events', eventRoutes);
     app.use('/api/assets', assetRoutes);
+    app.use('/api/payroll', payrollRoutes);
+    app.use('/api/closing', closingRoutes);
     app.use('/api/galleries', galleryRoutes);
     app.use('/api/photos', photoRoutes);
     app.use('/api/selections', selectionRoutes);

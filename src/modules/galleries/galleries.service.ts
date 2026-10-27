@@ -29,6 +29,7 @@ export interface GalleryRow {
     event_date: string;
     event_venue?: string | null;
     cover_key?: string | null;
+    cover_photo_id?: number | null;
 }
 
 export async function loadGallery(id: number): Promise<GalleryRow> {
@@ -314,7 +315,23 @@ export async function accessWithToken(rawToken: string, user: AuthUser | undefin
     await execute('UPDATE tblGalleryToken SET use_count = use_count + 1, last_used_at = UTC_TIMESTAMP() WHERE id = ?', [t.id]);
     await logAccess(t.gallery_id, t.id, userId, 'GRANTED', ip, ua);
     const session: GallerySession = { galleryId: t.gallery_id, tokenId: t.id, scope: t.scope, albumId: t.album_id, photoId: t.photo_id, sessionId: uuid() };
-    return { session: signGallerySession(session), expiresInHours: GALLERY_SESSION_HOURS, galleryId: t.gallery_id, scope: t.scope };
+    const photo = await queryOne<{ thumb_key: string | null; preview_key: string | null }>(
+        `SELECT thumb_key, preview_key FROM tblPhoto
+          WHERE gallery_id = ? AND deleted_at IS NULL AND is_rejected = 0 AND is_published = 1
+            AND (thumb_key IS NOT NULL OR preview_key IS NOT NULL)
+          ORDER BY (id = ?) DESC, id LIMIT 1`,
+        [t.gallery_id, g.cover_photo_id ?? 0],
+    );
+    const coverKey = g.cover_key || photo?.preview_key || photo?.thumb_key || null;
+    const coverUrl = coverKey ? await storage.signedUrl(coverKey) : null;
+    return {
+        session: signGallerySession(session),
+        expiresInHours: GALLERY_SESSION_HOURS,
+        galleryId: t.gallery_id,
+        scope: t.scope,
+        title: g.title,
+        coverUrl,
+    };
 }
 
 export interface GalleryAccess {

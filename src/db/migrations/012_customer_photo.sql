@@ -1,0 +1,1 @@
+ALTER TABLE tblCustomer ADD COLUMN photo_key VARCHAR(255) NULL AFTER notes;

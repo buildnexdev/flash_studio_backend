@@ -184,6 +184,11 @@ router.post(
             userId: z.coerce.number().int().positive(),
             role: z.enum(['PHOTOGRAPHER', 'ASSISTANT', 'EDITOR', 'VIDEOGRAPHER', 'MANAGER', 'DELIVERY']).default('PHOTOGRAPHER'),
             cameraLabel: optionalText(40),
+            payBasis: z.enum(['DAY_RATE', 'SHARE', 'COMMISSION', 'FLAT', 'NONE']).optional(),
+            sharePct: z.coerce.number().min(0).max(100).nullable().optional(),
+            commissionPct: z.coerce.number().min(0).max(100).nullable().optional(),
+            dayRateOverride: z.coerce.number().int().min(0).nullable().optional(),
+            flatAmount: z.coerce.number().int().min(0).nullable().optional(),
         }),
     ),
     asyncHandler(async (req, res) => {

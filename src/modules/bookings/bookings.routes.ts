@@ -12,17 +12,25 @@ import { hhmm, idParam, money, optionalText, ymd } from '../../utils/schemas.js'
 import { auditCtx } from '../audit/audit.service.js';
 import * as bookings from './bookings.service.js';
 
-export const bookingDetails = z.object({
-    serviceId: z.coerce.number().int().positive().optional().nullable(),
-    packageId: z.coerce.number().int().positive().optional().nullable(),
-    eventType: z.string().trim().min(2).max(60),
-    eventDate: ymd,
-    startTime: hhmm,
-    endTime: hhmm,
-    venue: optionalText(255),
-    guests: z.coerce.number().int().min(0).max(100000).optional().nullable(),
-    message: optionalText(3000),
-});
+export const bookingDetails = z
+    .object({
+        serviceId: z.coerce.number().int().positive().optional().nullable(),
+        packageId: z.coerce.number().int().positive().optional().nullable(),
+        /** Custom quotation total in paise when no package is selected. */
+        quotedAmount: money.optional().nullable(),
+        eventType: z.string().trim().min(2).max(60),
+        eventDate: ymd,
+        startTime: hhmm,
+        endTime: hhmm,
+        venue: optionalText(255),
+        guests: z.coerce.number().int().min(0).max(100000).optional().nullable(),
+        message: optionalText(3000),
+    })
+    .superRefine((v, ctx) => {
+        if (!v.packageId && v.quotedAmount != null && v.quotedAmount < 0) {
+            ctx.addIssue({ code: 'custom', path: ['quotedAmount'], message: 'Enter a valid amount' });
+        }
+    });
 
 const adminBooking = bookingDetails.extend({ customerId: z.coerce.number().int().positive(), internalNotes: optionalText(3000) });
 

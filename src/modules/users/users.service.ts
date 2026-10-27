@@ -59,7 +59,7 @@ export async function listUsers(f: UserFilter) {
 }
 
 export interface StaffProfile {
-    personal?: { dob?: string; gender?: string; bloodGroup?: string; joinedOn?: string; emergencyName?: string; emergencyPhone?: string };
+    personal?: { dob?: string; gender?: string; bloodGroup?: string; joinedOn?: string; emergencyName?: string; emergencyPhone?: string; emergencyPhone2?: string; photoUrl?: string };
     address?: { line1?: string; line2?: string; city?: string; state?: string; pincode?: string; country?: string };
     permanentAddress?: { same?: boolean; line1?: string; line2?: string; city?: string; state?: string; pincode?: string; country?: string };
     education?: { qualification?: string; institution?: string; field?: string; year?: string; grade?: string }[];
