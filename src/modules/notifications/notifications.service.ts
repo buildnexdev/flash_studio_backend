@@ -1,10 +1,10 @@
 // Developer by: Buildnexdev.in
 // Devevloper : Nandhakumar@gmail.com
 // Last Edited : 06-10-2026
-import { execute, json, query, queryOne } from '../../db/pool.js';
+import { execute, json, query, queryOne, withTransaction, type Db } from '../../db/pool.js';
 import { sendEmail, sendSms, sendWhatsApp, type ChannelResult } from '../../lib/channels.js';
 import { emitTo, rooms } from '../../lib/realtime.js';
-import type { Permission } from '../../config/rbac.js';
+import { PERMISSIONS, type Permission } from '../../config/rbac.js';
 import { getSetting } from '../settings/settings.service.js';
 import { offsetOf, paged } from '../../utils/pagination.js';
 
@@ -59,13 +59,22 @@ async function deliverExternal(r: Recipient, input: NotifyInput): Promise<Record
     return results;
 }
 
-async function store(userId: number, input: NotifyInput, channels: Record<string, ChannelResult>) {
+function notificationPayload(id: number, userId: number, input: NotifyInput) {
+    return { userId, id, type: input.type, title: input.title, body: input.body, link: input.link ?? null, data: input.data ?? null, read_at: null, created_at: new Date().toISOString() };
+}
+
+async function insertNotification(userId: number, input: NotifyInput, channels: Record<string, ChannelResult>, db?: Db) {
+    if (!(NOTIFICATION_TYPES as readonly string[]).includes(input.type)) throw new Error('Invalid notification type');
     const res = await execute(
         'INSERT INTO tblNotification (user_id, type, title, body, link, data, channels) VALUES (?, ?, ?, ?, ?, ?, ?)',
         [userId, input.type, input.title.slice(0, 160), input.body.slice(0, 500), input.link ?? null, json(input.data), json({ inApp: { sent: true }, ...channels })],
+        db,
     );
-    const payload = { id: res.insertId, type: input.type, title: input.title, body: input.body, link: input.link ?? null, data: input.data ?? null, read_at: null, created_at: new Date().toISOString() };
-    emitTo(rooms.user(userId), 'notification', payload);
+    return notificationPayload(res.insertId, userId, input);
+}
+
+function publish(note: ReturnType<typeof notificationPayload>) {
+    emitTo(rooms.user(note.userId), 'notification', note);
 }
 
 /** Notify a platform user (in-app + optional external channels). Never throws. */
@@ -74,7 +83,8 @@ export async function notifyUser(userId: number, input: NotifyInput): Promise<vo
         const u = await queryOne<{ email: string | null; phone: string | null }>('SELECT email, phone FROM tblUser WHERE id = ? AND deleted_at IS NULL', [userId]);
         if (!u) return;
         const channels = input.external ? await deliverExternal({ userId, ...u }, input) : {};
-        await store(userId, input, channels);
+        const note = await withTransaction((conn) => insertNotification(userId, input, channels, conn));
+        publish(note);
     } catch (err) {
         console.error('[notify] user', userId, err);
     }
@@ -86,7 +96,10 @@ export async function notifyCustomer(customerId: number, input: NotifyInput): Pr
         const c = await queryOne<{ user_id: number | null; email: string | null; phone: string | null }>('SELECT user_id, email, phone FROM tblCustomer WHERE id = ?', [customerId]);
         if (!c) return;
         const channels = input.external !== false ? await deliverExternal({ userId: c.user_id, email: c.email, phone: c.phone }, input) : {};
-        if (c.user_id) await store(c.user_id, input, channels);
+        if (c.user_id) {
+            const note = await withTransaction((conn) => insertNotification(c.user_id!, input, channels, conn));
+            publish(note);
+        }
     } catch (err) {
         console.error('[notify] customer', customerId, err);
     }
@@ -95,22 +108,30 @@ export async function notifyCustomer(customerId: number, input: NotifyInput): Pr
 /** Notify every active staff member holding one of the permissions (in-app only). */
 export async function notifyStaff(permissions: Permission[], input: NotifyInput, exceptUserId?: number): Promise<void> {
     try {
+        const allowed = permissions.filter((code) => code in PERMISSIONS);
+        if (!allowed.length) return;
         const users = await query<{ id: number }>(
             `SELECT DISTINCT u.id FROM tblUser u
                JOIN tblUserRole ur ON ur.user_id = u.id
                JOIN tblRolePermission rp ON rp.role_id = ur.role_id
                JOIN tblPermission p ON p.id = rp.permission_id
               WHERE p.code IN (?) AND u.status = 'ACTIVE' AND u.deleted_at IS NULL`,
-            [permissions],
+            [allowed],
         );
-        for (const u of users) if (u.id !== exceptUserId) await store(u.id, input, {});
+        const targets = users.filter((u) => u.id !== exceptUserId);
+        const notes = await withTransaction(async (conn) => {
+            const saved = [];
+            for (const u of targets) saved.push(await insertNotification(u.id, input, {}, conn));
+            return saved;
+        });
+        for (const note of notes) publish(note);
     } catch (err) {
         console.error('[notify] staff', err);
     }
 }
 
 export async function listNotifications(userId: number, q: { page: number; pageSize: number; unread?: boolean }) {
-    const where = q.unread ? 'user_id = ? AND read_at IS NULL' : 'user_id = ?';
+    const where = q.unread === true ? 'user_id = ? AND read_at IS NULL' : 'user_id = ?';
     const total = (await queryOne<{ n: number }>(`SELECT COUNT(*) AS n FROM tblNotification WHERE ${where}`, [userId]))?.n ?? 0;
     const unread = (await queryOne<{ n: number }>('SELECT COUNT(*) AS n FROM tblNotification WHERE user_id = ? AND read_at IS NULL', [userId]))?.n ?? 0;
     const items = await query(
@@ -121,9 +142,13 @@ export async function listNotifications(userId: number, q: { page: number; pageS
 }
 
 export async function markRead(userId: number, ids: number[] | 'all'): Promise<number> {
-    const res =
+    if (ids !== 'all') {
+        if (!ids.length || ids.some((id) => !Number.isInteger(id) || id <= 0)) return 0;
+    }
+    const res = await withTransaction((conn) =>
         ids === 'all'
-            ? await execute('UPDATE tblNotification SET read_at = UTC_TIMESTAMP() WHERE user_id = ? AND read_at IS NULL', [userId])
-            : await execute('UPDATE tblNotification SET read_at = UTC_TIMESTAMP() WHERE user_id = ? AND id IN (?) AND read_at IS NULL', [userId, ids]);
+            ? execute('UPDATE tblNotification SET read_at = UTC_TIMESTAMP() WHERE user_id = ? AND read_at IS NULL', [userId], conn)
+            : execute('UPDATE tblNotification SET read_at = UTC_TIMESTAMP() WHERE user_id = ? AND id IN (?) AND read_at IS NULL', [userId, ids], conn),
+    );
     return res.affectedRows;
 }

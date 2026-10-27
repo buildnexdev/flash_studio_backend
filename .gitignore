@@ -4,3 +4,4 @@ storage/
 .env
 .env.*
 !.env.example
+deploy/render-env.txt

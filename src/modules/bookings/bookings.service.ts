@@ -3,6 +3,9 @@
 // Last Edited : 06-10-2026
 import type { PoolConnection } from 'mysql2/promise';
 import { execute, query, queryOne, withTransaction, type Db, pool } from '../../db/pool.js';
+import { sendEmail } from '../../lib/channels.js';
+import { simplePdf } from '../../lib/simple-pdf.js';
+import { storage } from '../../lib/storage.js';
 import type { AuthUser } from '../../middleware/auth.js';
 import { hasPermission } from '../../middleware/auth.js';
 import { badRequest, conflict, forbidden, notFound } from '../../utils/errors.js';
@@ -12,6 +15,9 @@ import { audit, type AuditContext } from '../audit/audit.service.js';
 import { evaluateCoupon, getPackage } from '../catalog/catalog.service.js';
 import { findOrCreateCustomer } from '../customers/customers.service.js';
 import { ensureEventForBooking } from '../events/events.service.js';
+import { assertSlotFree } from '../events/availability.js';
+import { ensureEventQr } from '../galleries/galleries.service.js';
+import { getSetting } from '../settings/settings.service.js';
 import { notifyCustomer, notifyStaff } from '../notifications/notifications.service.js';
 
 export const BOOKING_STATUSES = ['ENQUIRY', 'QUOTED', 'ADVANCE_PENDING', 'CONFIRMED', 'IN_PROGRESS', 'DELIVERED', 'COMPLETED', 'CANCELLED'] as const;
@@ -172,6 +178,9 @@ export async function updateBooking(id: number, input: BookingDetails & { intern
     const b = await queryOne<{ status: BookingStatus; total_amount: number; package_id: number | null }>('SELECT status, total_amount, package_id FROM tblBooking WHERE id = ? AND deleted_at IS NULL', [id]);
     if (!b) throw notFound('Booking');
     if (['COMPLETED', 'CANCELLED'].includes(b.status)) throw conflict(`A ${b.status.toLowerCase()} booking cannot be edited.`);
+    if (['ADVANCE_PENDING', 'CONFIRMED', 'IN_PROGRESS'].includes(b.status)) {
+        await assertSlotFree({ eventDate: input.eventDate, startTime: input.startTime, endTime: input.endTime, excludeBookingId: id });
+    }
     await withTransaction(async (conn) => {
         await execute(
             'UPDATE tblBooking SET service_id = ?, package_id = ?, event_type = ?, event_date = ?, start_time = ?, end_time = ?, venue = ?, guests = ?, message = ?, internal_notes = ? WHERE id = ?',
@@ -310,18 +319,112 @@ export async function updateQuotation(id: number, input: QuotationInput, actor: 
 export async function sendQuotation(id: number, actor: AuthUser, ctx: AuditContext) {
     const q = await loadQuotation(id);
     if (!['DRAFT', 'SENT'].includes(q.status)) throw conflict('Only draft quotations can be sent.');
-    const b = await queryOne<{ customer_id: number; booking_no: string; status: BookingStatus }>('SELECT customer_id, booking_no, status FROM tblBooking WHERE id = ?', [q.booking_id]);
+    const b = await queryOne<{ customer_id: number; booking_no: string; status: BookingStatus; customer_email: string | null; customer_name: string }>(
+        'SELECT b.customer_id, b.booking_no, b.status, c.email AS customer_email, c.name AS customer_name FROM tblBooking b JOIN tblCustomer c ON c.id = b.customer_id WHERE b.id = ?',
+        [q.booking_id],
+    );
+    const pdf = await storeQuotationPdf(id);
     await withTransaction(async (conn) => {
-        await execute("UPDATE tblQuotation SET status = 'SENT', sent_at = UTC_TIMESTAMP() WHERE id = ?", [id], conn);
+        await execute("UPDATE tblQuotation SET status = 'SENT', sent_at = UTC_TIMESTAMP(), pdf_key = ? WHERE id = ?", [pdf.key, id], conn);
         await execute("UPDATE tblBooking SET status = 'QUOTED' WHERE id = ? AND status = 'ENQUIRY'", [q.booking_id], conn);
     });
-    await audit(ctx, 'QUOTATION_SENT', 'bookings', q.booking_id, { quotationId: id });
+    let emailed = false;
+    if (b?.customer_email) {
+        const studio = await getSetting('studio');
+        const mail = await sendEmail(
+            b.customer_email,
+            `${studio.name}: quotation ${q.quotation_no}`,
+            `Hello ${b.customer_name}, your quotation ${q.quotation_no} for booking ${b.booking_no} is attached. Sign in to accept, decline, or ask for a revision.`,
+            `/customer/bookings?open=${q.booking_id}`,
+            [{ filename: `${q.quotation_no}.pdf`, content: pdf.bytes, contentType: 'application/pdf' }],
+        );
+        emailed = mail.sent;
+        if (emailed) await execute('UPDATE tblQuotation SET emailed_at = UTC_TIMESTAMP() WHERE id = ?', [id]);
+    }
+    await audit(ctx, 'QUOTATION_SENT', 'bookings', q.booking_id, { quotationId: id, emailed });
     await notifyCustomer(b!.customer_id, {
         type: 'QUOTATION_SENT',
         title: 'Your quotation is ready',
         body: `Quotation ${q.quotation_no} for booking ${b!.booking_no}: total ₹${(Number(q.total) / 100).toFixed(2)}. Sign in to review and accept it.`,
         link: `/customer/bookings?open=${q.booking_id}`,
     });
+    return getBooking(q.booking_id, actor);
+}
+
+async function storeQuotationPdf(id: number) {
+    const q = await queryOne<Record<string, unknown>>('SELECT * FROM tblQuotation WHERE id = ?', [id]);
+    if (!q) throw notFound('Quotation');
+    const booking = await queryOne<{ booking_no: string; event_type: string; event_date: string; start_time: string | null; end_time: string | null; venue: string | null; customer_name: string }>(
+        'SELECT b.booking_no, b.event_type, b.event_date, b.start_time, b.end_time, b.venue, c.name AS customer_name FROM tblBooking b JOIN tblCustomer c ON c.id = b.customer_id WHERE b.id = ?',
+        [q.booking_id],
+    );
+    const items = await query<{ description: string; quantity: number; unit_price: number; total: number }>('SELECT description, quantity, unit_price, total FROM tblQuotationItem WHERE quotation_id = ? ORDER BY sort_order, id', [id]);
+    const studio = await getSetting('studio');
+    const rupees = (paise: unknown) => `Rs ${(Number(paise) / 100).toFixed(2)}`;
+    const lines = [
+        studio.name,
+        `Quotation ${q.quotation_no}`,
+        `Revision ${q.revision ?? 1}`,
+        `Customer: ${booking?.customer_name ?? ''}`,
+        `Booking: ${booking?.booking_no ?? ''}`,
+        `Event: ${booking?.event_type ?? ''} on ${booking?.event_date ?? ''} ${booking?.start_time ?? ''} - ${booking?.end_time ?? ''}`,
+        `Venue: ${booking?.venue ?? '-'}`,
+        '',
+        'Services and pricing',
+        ...items.map((item) => `${item.quantity} x ${item.description}  ${rupees(item.unit_price)}  ${rupees(item.total)}`),
+        '',
+        `Subtotal ${rupees(q.subtotal)}`,
+        `Discount ${rupees(q.discount)}`,
+        `Tax ${q.tax_percent}% ${rupees(q.tax)}`,
+        `Total ${rupees(q.total)}`,
+        `Advance due ${rupees(q.advance_amount)}`,
+        `Valid until ${q.valid_until ?? 'until withdrawn'}`,
+        '',
+        'Payment terms',
+        String(q.terms || 'The advance confirms the date. The balance is due before final delivery.'),
+        '',
+        'Deliverables',
+        String(q.notes || 'As listed in the services above.'),
+    ];
+    const bytes = simplePdf(lines);
+    const key = `quotations/${id}.pdf`;
+    await storage.put(key, bytes, 'application/pdf');
+    return { key, bytes };
+}
+
+export async function quotationPdf(id: number, actor: AuthUser) {
+    const q = await loadQuotation(id);
+    await getBooking(q.booking_id, actor);
+    const row = await queryOne<{ pdf_key: string | null; quotation_no: string }>('SELECT pdf_key, quotation_no FROM tblQuotation WHERE id = ?', [id]);
+    const pdf = row?.pdf_key && (await storage.exists(row.pdf_key)) ? { bytes: await storage.get(row.pdf_key) } : await storeQuotationPdf(id);
+    if (!row?.pdf_key && 'key' in pdf) await execute('UPDATE tblQuotation SET pdf_key = ? WHERE id = ?', [pdf.key, id]);
+    return { filename: `${row?.quotation_no ?? 'quotation'}.pdf`, bytes: pdf.bytes };
+}
+
+export async function reviseQuotation(id: number, note: string | null, actor: AuthUser, ctx: AuditContext) {
+    const q = await loadQuotation(id);
+    if (!['SENT', 'REJECTED'].includes(q.status)) throw conflict('Only a sent or declined quotation can be revised.');
+    const booking = await queryOne<{ status: BookingStatus }>('SELECT status FROM tblBooking WHERE id = ? AND deleted_at IS NULL', [q.booking_id]);
+    if (!booking || !['ENQUIRY', 'QUOTED', 'ADVANCE_PENDING'].includes(booking.status)) throw conflict('This booking can no longer take a new quotation.');
+    const source = await queryOne<{ revision: number; subtotal: number; discount: number; tax_percent: number; tax: number; total: number; advance_amount: number; valid_until: string | null; notes: string | null; terms: string | null }>(
+        'SELECT revision, subtotal, discount, tax_percent, tax, total, advance_amount, valid_until, notes, terms FROM tblQuotation WHERE id = ?',
+        [id],
+    );
+    const items = await query<{ description: string; quantity: number; unit_price: number; total: number; sort_order: number }>('SELECT description, quantity, unit_price, total, sort_order FROM tblQuotationItem WHERE quotation_id = ? ORDER BY sort_order, id', [id]);
+    const nextId = await withTransaction(async (conn) => {
+        const no = await nextNumber('quotation', conn);
+        const res = await execute(
+            `INSERT INTO tblQuotation (quotation_no, booking_id, revision, revises_id, revision_note, status, subtotal, discount, tax_percent, tax, total, advance_amount, valid_until, notes, terms, created_by)
+             VALUES (?, ?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [no, q.booking_id, Number(source?.revision ?? 1) + 1, id, note, source?.subtotal ?? 0, source?.discount ?? 0, source?.tax_percent ?? 0, source?.tax ?? 0, source?.total ?? 0, source?.advance_amount ?? 0, source?.valid_until ?? null, source?.notes ?? null, source?.terms ?? null, actor.id],
+            conn,
+        );
+        for (const item of items) {
+            await execute('INSERT INTO tblQuotationItem (quotation_id, description, quantity, unit_price, total, sort_order) VALUES (?, ?, ?, ?, ?, ?)', [res.insertId, item.description, item.quantity, item.unit_price, item.total, item.sort_order], conn);
+        }
+        return res.insertId;
+    });
+    await audit(ctx, 'QUOTATION_REVISED', 'bookings', q.booking_id, { quotationId: nextId, revisesId: id });
     return getBooking(q.booking_id, actor);
 }
 
@@ -339,6 +442,10 @@ export async function respondQuotation(id: number, decision: 'ACCEPT' | 'REJECT'
     if (q.valid_until && q.valid_until < new Date().toISOString().slice(0, 10)) {
         await execute("UPDATE tblQuotation SET status = 'EXPIRED' WHERE id = ?", [id]);
         throw conflict('This quotation has expired. Please ask the studio for a new one.');
+    }
+    if (decision === 'ACCEPT') {
+        const slot = await queryOne<{ event_date: string; start_time: string | null; end_time: string | null }>('SELECT event_date, start_time, end_time FROM tblBooking WHERE id = ?', [q.booking_id]);
+        if (slot) await assertSlotFree({ eventDate: String(slot.event_date).slice(0, 10), startTime: slot.start_time, endTime: slot.end_time, excludeBookingId: q.booking_id });
     }
 
     let confirmed = false;
@@ -359,6 +466,10 @@ export async function respondQuotation(id: number, decision: 'ACCEPT' | 'REJECT'
         ], conn);
         if (confirmed) await ensureEventForBooking(q.booking_id, ctx, conn);
     });
+    if (confirmed) {
+        const event = await queryOne<{ id: number }>('SELECT id FROM tblEvent WHERE booking_id = ? AND deleted_at IS NULL', [q.booking_id]);
+        if (event) await ensureEventQr(event.id, ctx);
+    }
     await audit(ctx, decision === 'ACCEPT' ? 'QUOTATION_ACCEPTED' : 'QUOTATION_REJECTED', 'bookings', q.booking_id, { quotationId: id });
     if (isStaff) {
         await notifyCustomer(b.customer_id, { type: 'GENERAL', title: `Quotation ${decision === 'ACCEPT' ? 'accepted' : 'declined'}`, body: `Quotation ${q.quotation_no} was ${decision === 'ACCEPT' ? 'accepted' : 'declined'} on your behalf.`, link: `/customer/bookings?open=${b.id}` });

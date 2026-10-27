@@ -35,6 +35,7 @@ export const settingSchemas = {
         defaultExpiryDays: z.number().int().min(1).max(3650),
         previewSize: z.number().int().min(600).max(3000),
         thumbSize: z.number().int().min(200).max(1000),
+        requirePhoneVerification: z.boolean().default(false),
     }),
     notifications: z.object({
         email: z.boolean(),
@@ -100,6 +101,9 @@ export const settingSchemas = {
             .optional()
             .default([]),
     }),
+    subscription: z.object({
+        enabledModules: z.array(z.string().max(40)).default([]),
+    }),
 };
 
 export type SettingKey = keyof typeof settingSchemas;
@@ -131,7 +135,7 @@ export const DEFAULT_SETTINGS: Settings = {
         album: 1499900,
         courierFee: 15000,
     },
-    gallery: { watermarkText: 'BuildNexDev Studio', defaultExpiryDays: 90, previewSize: 1600, thumbSize: 480 },
+    gallery: { watermarkText: 'BuildNexDev Studio', defaultExpiryDays: 90, previewSize: 1600, thumbSize: 480, requirePhoneVerification: false },
     notifications: { email: true, whatsapp: false, sms: false },
     ai: { faceSearch: false, culling: true, blurThreshold: 60 },
     website: {
@@ -176,6 +180,7 @@ export const DEFAULT_SETTINGS: Settings = {
             },
         ],
     },
+    subscription: { enabledModules: [] },
 };
 
 export const PUBLIC_SETTING_KEYS: SettingKey[] = ['studio', 'website'];

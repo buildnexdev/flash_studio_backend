@@ -4,8 +4,8 @@
 import bcrypt from 'bcryptjs';
 import type { PoolConnection } from 'mysql2/promise';
 import { config } from '../../config/env.js';
-import { ROLE_HOME, type RoleCode } from '../../config/rbac.js';
-import { currentStudioSlug, execute, query, queryOne, withTransaction, type Db, pool } from '../../db/pool.js';
+import { ROLE_HOME, primaryRole, type RoleCode } from '../../config/rbac.js';
+import { currentStudioSlug, execute, primaryCompanyId, query, queryOne, withTransaction, type Db, pool } from '../../db/pool.js';
 import { invalidateUserCache, loadAuthUser, serializeUser, signAccessToken } from '../../middleware/auth.js';
 import { sendEmail, sendSms, sendWhatsApp } from '../../lib/channels.js';
 import { numericCode, randomToken, sha256, uuid } from '../../utils/crypto.js';
@@ -63,7 +63,7 @@ export async function sessionPayload(userId: number, tokens: IssuedTokens) {
     invalidateUserCache(userId);
     const user = await loadAuthUser(userId);
     if (!user) throw unauthorized('Account is not active.');
-    const primary = (['SUPER_ADMIN', 'STUDIO_OWNER', 'MANAGER', 'PHOTOGRAPHER', 'EDITOR_DESIGNER', 'PRINTER_DELIVERY_STAFF', 'CUSTOMER'] as RoleCode[]).find((r) => user.roles.includes(r));
+    const primary = primaryRole(user.roles);
     return {
         user: serializeUser(user),
         accessToken: tokens.accessToken,
@@ -97,8 +97,13 @@ export async function register(input: { name: string; email: string; phone?: str
     const hash = await hashPassword(input.password);
 
     const userId = await withTransaction(async (conn) => {
-        const res = await execute('INSERT INTO tblUser (name, email, phone, password_hash) VALUES (?, ?, ?, ?)', [input.name.trim(), email, phone, hash], conn);
-        await execute('INSERT INTO tblUserRole (user_id, role_id) VALUES (?, ?)', [res.insertId, await roleIdByCode('CUSTOMER', conn)], conn);
+        const roleId = await roleIdByCode('CUSTOMER', conn);
+        const res = await execute(
+            'INSERT INTO tblUser (company_id, role_id, name, email, phone, password_hash) VALUES (?, ?, ?, ?, ?, ?)',
+            [await primaryCompanyId(conn), roleId, input.name.trim(), email, phone, hash],
+            conn,
+        );
+        await execute('INSERT INTO tblUserRole (user_id, role_id) VALUES (?, ?)', [res.insertId, roleId], conn);
         await linkCustomer(conn, res.insertId, input.name.trim(), email, phone);
         return res.insertId;
     });
@@ -297,17 +302,30 @@ export async function forgotPassword(emailRaw: string) {
     const email = normEmail(emailRaw)!;
     const user = await queryOne<{ id: number }>("SELECT id FROM tblUser WHERE email = ? AND deleted_at IS NULL AND status = 'ACTIVE'", [email]);
     if (!user) return { sent: true as const };
-    const token = randomToken(32);
+    const code = numericCode(6);
     await execute("UPDATE tblOtpCode SET consumed_at = UTC_TIMESTAMP() WHERE destination = ? AND purpose = 'RESET_PASSWORD' AND consumed_at IS NULL", [email]);
     await execute("INSERT INTO tblOtpCode (user_id, destination, purpose, code_hash, expires_at) VALUES (?, ?, 'RESET_PASSWORD', ?, ?)", [
         user.id,
         email,
+        sha256(`${email}:${code}`),
+        toSqlDateTime(new Date(Date.now() + OTP_TTL_MINUTES * 60_000)),
+    ]);
+    const result = await sendEmail(email, 'Your Nammaqr password code', `Your Nammaqr password reset code is ${code}. It expires in ${OTP_TTL_MINUTES} minutes. If you did not request this, ignore this email.`);
+    return { sent: true as const, ...(!config.isProd && !result.sent ? { devCode: code } : {}) };
+}
+
+/** Confirms the email OTP, then returns a one-time token. The new password form is only valid with this token. */
+export async function verifyResetOtp(emailRaw: string, code: string) {
+    const email = normEmail(emailRaw)!;
+    const userId = await consumeOtp(email, 'RESET_PASSWORD', code);
+    const token = randomToken(32);
+    await execute("INSERT INTO tblOtpCode (user_id, destination, purpose, code_hash, expires_at) VALUES (?, ?, 'RESET_PASSWORD', ?, ?)", [
+        userId,
+        email,
         sha256(`${email}:${token}`),
         toSqlDateTime(new Date(Date.now() + RESET_TTL_MINUTES * 60_000)),
     ]);
-    const link = `/reset-password?email=${encodeURIComponent(email)}&token=${encodeURIComponent(token)}`;
-    const result = await sendEmail(email, 'Reset your password', `We received a request to reset your password. The link is valid for ${RESET_TTL_MINUTES} minutes. If you did not request this, ignore this email.`, link);
-    return { sent: true as const, ...(!config.isProd && !result.sent ? { devResetLink: link } : {}) };
+    return { resetToken: token };
 }
 
 export async function resetPassword(emailRaw: string, token: string, password: string, ctx: AuditContext) {

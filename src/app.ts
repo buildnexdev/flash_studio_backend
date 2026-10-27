@@ -5,6 +5,7 @@ import compression from 'compression';
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import express, { type Request } from 'express';
+import path from 'node:path';
 import helmet from 'helmet';
 import { config } from './config/env.js';
 import { pool } from './db/pool.js';
@@ -27,9 +28,11 @@ import photoRoutes from './modules/photos/photos.routes.js';
 import { deliveryRouter, printingRouter, proofsRouter } from './modules/production/production.routes.js';
 import publicRoutes from './modules/public/public.routes.js';
 import selectionRoutes from './modules/selections/selections.routes.js';
+import assetRoutes from './modules/system/asset.routes.js';
 import { auditRouter, notificationsRouter, portalRouter, reportsRouter, settingsRouter } from './modules/system/system.routes.js';
 import userRoutes from './modules/users/users.routes.js';
 import companyRoutes from './modules/companies/companies.routes.js';
+import companyPublicRoutes from './modules/companies/companies.public.routes.js';
 
 function isOriginAllowed(origin: string | undefined): boolean {
     if (!origin) return true;
@@ -110,6 +113,8 @@ export function createApp() {
     );
     app.use(express.urlencoded({ extended: false, limit: '1mb' }));
 
+    app.use('/brand', express.static(path.join(process.cwd(), 'public'), { maxAge: '7d', index: false }));
+
     app.get('/api/health', async (_req, res) => {
         let database = 'up';
         try {
@@ -125,6 +130,7 @@ export function createApp() {
     app.use('/api', apiLimiter);
 
     app.use('/api/auth', authRoutes);
+    app.use('/api/public/companies', companyPublicRoutes);
     app.use('/api/public', publicRoutes);
     app.use('/api/gallery', publicGalleryRoutes);
     app.use('/api/companies', companyRoutes);
@@ -133,6 +139,7 @@ export function createApp() {
     app.use('/api/catalog', catalogRoutes);
     app.use('/api/bookings', bookingRoutes);
     app.use('/api/events', eventRoutes);
+    app.use('/api/assets', assetRoutes);
     app.use('/api/galleries', galleryRoutes);
     app.use('/api/photos', photoRoutes);
     app.use('/api/selections', selectionRoutes);
@@ -150,7 +157,7 @@ export function createApp() {
     app.use('/api/portal', portalRouter);
     app.use('/api/ai', aiRoutes);
 
-    app.get('/api', (_req, res) => ok(res, { name: 'Photo Studio Digital Platform API', brand: 'BuildNexDev', version: '1.0.0' }));
+    app.get('/api', (_req, res) => ok(res, { name: 'Nammaqr Photography API', brand: 'Nammaqr', version: '1.0.0' }));
     app.use(notFoundHandler);
     app.use(errorHandler);
     return app;

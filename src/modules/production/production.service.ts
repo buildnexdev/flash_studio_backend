@@ -109,7 +109,7 @@ export async function sendProof(id: number, ctx: AuditContext) {
     const p = await loadProof(id);
     if (p.status === 'APPROVED') throw conflict('This proof is already approved.');
     await execute("UPDATE tblAlbumProof SET status = 'SENT', sent_at = UTC_TIMESTAMP() WHERE id = ?", [id]);
-    await execute("UPDATE tblAlbumRevision SET status = 'RESOLVED', resolved_by = ?, resolved_at = UTC_TIMESTAMP() WHERE proof_id IN (SELECT id FROM (SELECT id FROM tblAlbumProof WHERE event_id = ? AND id < ?) x) AND status = 'OPEN'", [ctx.userId, p.event_id, id]);
+    await execute("UPDATE tblAlbumRevision SET status = 'RESOLVED', resolved_by = ?, resolved_at = UTC_TIMESTAMP() WHERE proof_id IN (SELECT albumProofID FROM (SELECT albumProofID FROM tblAlbumProof WHERE event_id = ? AND albumProofID < ?) x) AND status = 'OPEN'", [ctx.userId, p.event_id, id]);
     await audit(ctx, 'ALBUM_PROOF_SENT', 'proofs', id, { version: p.version });
     await notifyCustomer(p.customer_id, { type: 'ALBUM_PROOF_READY', title: 'Your album design is ready', body: `Version ${p.version} of the album for ${p.event_title} is ready for your review.`, link: `/customer/events?proof=${id}` });
 }

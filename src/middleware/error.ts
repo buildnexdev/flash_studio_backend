@@ -36,6 +36,18 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
     if (e?.code === 'ER_DUP_ENTRY') {
         return res.status(409).json({ success: false, message: 'A record with the same unique value already exists.', errors: [] });
     }
+    if (e?.code === 'ER_NO_SUCH_TABLE') {
+        const sqlMessage = typeof e.message === 'string' ? e.message : '';
+        const onboarding = sqlMessage.includes('tblOnboarding');
+        return res.status(503).json({
+            success: false,
+            message: onboarding
+                ? 'Signup is not ready on the server yet. Run database migrations (npm run db:migrate) and restart the API.'
+                : 'Database schema is out of date. Run migrations and try again.',
+            errors: [],
+            code: 'SCHEMA_OUT_OF_DATE',
+        });
+    }
 
     // Unknown error: log server-side, never leak internals (SQL, secrets, stack) to the client
     console.error(`[error] ${req.method} ${req.originalUrl}`, err);

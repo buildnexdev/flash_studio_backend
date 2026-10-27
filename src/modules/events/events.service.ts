@@ -11,8 +11,12 @@ import { likeTerm, offsetOf, orderBy, paged } from '../../utils/pagination.js';
 import { toSqlDateTime } from '../../utils/dates.js';
 import { audit, type AuditContext } from '../audit/audit.service.js';
 import { notifyCustomer, notifyUser } from '../notifications/notifications.service.js';
-import { ensureEventQr } from '../galleries/galleries.service.js';
+import { storage } from '../../lib/storage.js';
+import { ensureEventQr, galleryUrl } from '../galleries/galleries.service.js';
+import { decrypt } from '../../utils/crypto.js';
+import { qrDataUrl } from '../../lib/qr.js';
 import { getSetting } from '../settings/settings.service.js';
+import { assertSlotFree, findSlotClashes, type SlotInput } from './availability.js';
 
 export const EVENT_STATUSES = ['UPCOMING', 'LIVE', 'UPLOADING', 'PROCESSING', 'COMPLETED', 'CANCELLED'] as const;
 export type EventStatus = (typeof EVENT_STATUSES)[number];
@@ -27,6 +31,7 @@ export interface EventInput {
     endTime?: string | null;
     venue?: string | null;
     notes?: string | null;
+    force?: boolean;
 }
 
 /** Staff with events.view/manage see everything; photographers/editors only events they are assigned to; customers only their own. */
@@ -47,7 +52,7 @@ export async function assertEventAccess(actor: AuthUser, eventId: number, mode: 
 async function createGallery(conn: Db, eventId: number, title: string, userId: number | null) {
     const days = (await getSetting('gallery')).defaultExpiryDays;
     const expires = toSqlDateTime(new Date(Date.now() + days * 86_400_000));
-    const res = await execute('INSERT INTO tblGallery (event_id, title, expires_at, created_by) VALUES (?, ?, ?, ?)', [eventId, title, expires, userId], conn);
+    const res = await execute("INSERT INTO tblGallery (event_id, title, status, expires_at, created_by) VALUES (?, ?, 'PUBLISHED', ?, ?)", [eventId, title, expires, userId], conn);
     return res.insertId;
 }
 
@@ -55,6 +60,9 @@ export async function createEvent(input: EventInput, ctx: AuditContext, conn?: P
     const run = async (db: PoolConnection) => {
         const customer = await queryOne('SELECT id FROM tblCustomer WHERE id = ? AND deleted_at IS NULL', [input.customerId], db);
         if (!customer) throw badRequest('Customer not found.', [{ field: 'customerId', message: 'Not found' }]);
+        if (!input.force) {
+            await assertSlotFree({ eventDate: input.eventDate, startTime: input.startTime, endTime: input.endTime, excludeBookingId: input.bookingId ?? null }, db);
+        }
         const code = await nextNumber('event', db);
         const res = await execute(
             `INSERT INTO tblEvent (event_code, booking_id, customer_id, title, event_type, event_date, start_time, end_time, venue, notes, created_by)
@@ -66,6 +74,11 @@ export async function createEvent(input: EventInput, ctx: AuditContext, conn?: P
         return res.insertId;
     };
     const id = conn ? await run(conn) : await withTransaction(run);
+    try {
+        await ensureEventQr(id, ctx);
+    } catch (err) {
+        console.error('Failed to generate initial event QR/link:', err);
+    }
     await audit(ctx, 'EVENT_CREATED', 'events', id, { title: input.title, bookingId: input.bookingId ?? null });
     return id;
 }
@@ -116,9 +129,10 @@ export async function listEvents(f: EventFilter) {
     const w = where.join(' AND ');
     const total = (await queryOne<{ n: number }>(`SELECT COUNT(*) AS n FROM tblEvent e JOIN tblCustomer c ON c.id = e.customer_id WHERE ${w}`, params))?.n ?? 0;
     const items = await query(
-        `SELECT e.id, e.event_code, e.title, e.event_type, e.event_date, e.start_time, e.end_time, e.venue, e.status, e.booking_id,
+        `SELECT e.id, e.event_code, e.title, e.event_type, e.event_date, e.start_time, e.end_time, e.venue, e.status, e.booking_id, e.cover_key,
                 c.id AS customer_id, c.name AS customer_name, c.phone AS customer_phone,
                 g.id AS gallery_id, g.status AS gallery_status,
+                (SELECT gt.token_encrypted FROM tblGalleryToken gt WHERE gt.gallery_id = g.id AND gt.scope = 'EVENT' AND gt.revoked_at IS NULL AND (gt.expires_at IS NULL OR gt.expires_at > UTC_TIMESTAMP()) ORDER BY gt.id DESC LIMIT 1) AS token_encrypted,
                 b.status AS booking_status, b.total_amount, b.paid_amount,
                 (SELECT COUNT(*) FROM tblPhoto p WHERE p.event_id = e.id AND p.deleted_at IS NULL) AS photo_count,
                 (SELECT GROUP_CONCAT(u.name ORDER BY u.name SEPARATOR ', ') FROM tblEventStaff es JOIN tblUser u ON u.id = es.user_id WHERE es.event_id = e.id AND es.role = 'PHOTOGRAPHER') AS photographers
@@ -131,7 +145,27 @@ export async function listEvents(f: EventFilter) {
           LIMIT ? OFFSET ?`,
         [...params, f.pageSize, offsetOf(f)],
     );
-    return paged(items.map(withPaymentStatus), total, f);
+    const mapped = await Promise.all(
+        (items as any[]).map(async (row) => {
+            let qr_token: string | null = null;
+            let public_url: string | null = null;
+            if (row.token_encrypted) {
+                try {
+                    qr_token = decrypt(row.token_encrypted);
+                    public_url = galleryUrl(qr_token);
+                } catch {
+                    // fallback
+                }
+            }
+            return {
+                ...withPaymentStatus(row),
+                cover_url: row.cover_key ? await storage.signedUrl(row.cover_key) : null,
+                qr_token,
+                public_url,
+            };
+        }),
+    );
+    return paged(mapped, total, f);
 }
 
 function withPaymentStatus<T extends Record<string, any>>(e: T): T & { payment_status: string } {
@@ -157,7 +191,7 @@ export async function getEvent(id: number) {
                FROM tblEventStaff es JOIN tblUser u ON u.id = es.user_id WHERE es.event_id = ? ORDER BY es.role, u.name`,
             [id],
         ),
-        queryOne('SELECT id, title, status, watermark_enabled, allow_download, auto_publish, photo_price, expires_at FROM tblGallery WHERE event_id = ? AND deleted_at IS NULL ORDER BY id LIMIT 1', [id]),
+        queryOne('SELECT id, title, status, watermark_enabled, allow_download, auto_publish, photo_price, expires_at, cover_photo_id FROM tblGallery WHERE event_id = ? AND deleted_at IS NULL ORDER BY id LIMIT 1', [id]),
         query('SELECT status, COUNT(*) AS n FROM tblPhoto WHERE event_id = ? AND deleted_at IS NULL GROUP BY status', [id]),
         queryOne<{ booking_revenue: number; order_revenue: number }>(
             `SELECT
@@ -173,8 +207,38 @@ export async function getEvent(id: number) {
             [id, id, id],
         ),
     ]);
+    const row = e as { cover_key?: string | null };
+    let publicUrl: string | null = null;
+    let qrToken: string | null = null;
+    let qrData: string | null = null;
+    if (gallery) {
+        const galId = (gallery as { id: number }).id;
+        const tokenRow = await queryOne<{ id: number; token_encrypted: string }>(
+            `SELECT id, token_encrypted FROM tblGalleryToken
+              WHERE gallery_id = ? AND scope = 'EVENT' AND revoked_at IS NULL
+                AND (expires_at IS NULL OR expires_at > UTC_TIMESTAMP())
+                AND (max_uses IS NULL OR use_count < max_uses)
+              ORDER BY id DESC LIMIT 1`,
+            [galId],
+        );
+        if (tokenRow) {
+            qrToken = decrypt(tokenRow.token_encrypted);
+            publicUrl = galleryUrl(qrToken);
+            qrData = await qrDataUrl(publicUrl, 512);
+        } else {
+            const gen = await ensureEventQr(id, { userId: null, ip: '127.0.0.1', userAgent: 'system' });
+            if (gen && 'url' in gen) {
+                publicUrl = gen.url;
+                qrData = gen.qr;
+            }
+        }
+    }
     return {
         ...withPaymentStatus(e),
+        cover_url: row.cover_key ? await storage.signedUrl(row.cover_key) : null,
+        public_url: publicUrl,
+        qr_token: qrToken,
+        qr_data_url: qrData,
         staff,
         gallery,
         photos: Object.fromEntries(photoStats.map((r) => [r.status, r.n])),
@@ -188,6 +252,9 @@ export async function updateEvent(id: number, input: EventInput, ctx: AuditConte
     const current = await queryOne<{ status: EventStatus }>('SELECT status FROM tblEvent WHERE id = ? AND deleted_at IS NULL', [id]);
     if (!current) throw notFound('Event');
     if (current.status === 'CANCELLED') throw conflict('A cancelled event cannot be edited.');
+    if (!input.force) {
+        await assertSlotFree({ eventDate: input.eventDate, startTime: input.startTime, endTime: input.endTime, excludeEventId: id, excludeBookingId: input.bookingId ?? null });
+    }
     await execute('UPDATE tblEvent SET customer_id = ?, title = ?, event_type = ?, event_date = ?, start_time = ?, end_time = ?, venue = ?, notes = ? WHERE id = ?', [
         input.customerId,
         input.title,
@@ -200,6 +267,21 @@ export async function updateEvent(id: number, input: EventInput, ctx: AuditConte
         id,
     ]);
     await audit(ctx, 'EVENT_UPDATED', 'events', id);
+    return getEvent(id);
+}
+
+export async function checkAvailability(input: SlotInput) {
+    const conflicts = await findSlotClashes(input);
+    return { available: conflicts.length === 0, conflicts };
+}
+
+export async function saveCover(id: number, image: Buffer, ctx: AuditContext) {
+    const event = await queryOne('SELECT id FROM tblEvent WHERE id = ? AND deleted_at IS NULL', [id]);
+    if (!event) throw notFound('Event');
+    const key = `events/${id}/cover.jpg`;
+    await storage.put(key, image, 'image/jpeg');
+    await execute('UPDATE tblEvent SET cover_key = ? WHERE id = ?', [key, id]);
+    await audit(ctx, 'EVENT_COVER_UPDATED', 'events', id);
     return getEvent(id);
 }
 

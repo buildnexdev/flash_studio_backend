@@ -4,24 +4,56 @@
 export const ROLES = [
     'SUPER_ADMIN',
     'STUDIO_OWNER',
+    'COMPANY_ADMIN',
     'MANAGER',
     'PHOTOGRAPHER',
     'EDITOR_DESIGNER',
+    'STAFF',
     'PRINTER_DELIVERY_STAFF',
+    'REPORT_MANAGER',
+    'FINANCE',
     'CUSTOMER',
 ] as const;
 
 export type RoleCode = (typeof ROLES)[number];
 
-export const STAFF_ROLES: RoleCode[] = ['SUPER_ADMIN', 'STUDIO_OWNER', 'MANAGER', 'PHOTOGRAPHER', 'EDITOR_DESIGNER', 'PRINTER_DELIVERY_STAFF'];
+export const STAFF_ROLES: RoleCode[] = ['SUPER_ADMIN', 'STUDIO_OWNER', 'COMPANY_ADMIN', 'MANAGER', 'PHOTOGRAPHER', 'EDITOR_DESIGNER', 'STAFF', 'PRINTER_DELIVERY_STAFF', 'REPORT_MANAGER', 'FINANCE'];
+
+/** 100 platform, 1 company owner/admin, 2–7 company roles, 0 customer panel. */
+export const ROLE_LEVEL: Record<RoleCode, number> = {
+    SUPER_ADMIN: 100,
+    STUDIO_OWNER: 1,
+    COMPANY_ADMIN: 1,
+    MANAGER: 2,
+    PHOTOGRAPHER: 3,
+    EDITOR_DESIGNER: 4,
+    STAFF: 5,
+    PRINTER_DELIVERY_STAFF: 5,
+    REPORT_MANAGER: 6,
+    FINANCE: 7,
+    CUSTOMER: 0,
+};
+
+/** Lower rank is the account that wins when a user has more than one role. */
+export const roleRank = (level: number) => (level === 100 ? 0 : level === 0 ? 1000 : level);
+
+export function primaryRole(roles: readonly string[]): RoleCode | undefined {
+    const known = roles.filter((role): role is RoleCode => (ROLES as readonly string[]).includes(role));
+    known.sort((a, b) => roleRank(ROLE_LEVEL[a]) - roleRank(ROLE_LEVEL[b]));
+    return known[0];
+}
 
 export const ROLE_LABELS: Record<RoleCode, string> = {
     SUPER_ADMIN: 'Super Admin',
-    STUDIO_OWNER: 'Studio Owner',
+    STUDIO_OWNER: 'Company Owner',
+    COMPANY_ADMIN: 'Company Admin',
     MANAGER: 'Manager',
     PHOTOGRAPHER: 'Photographer',
-    EDITOR_DESIGNER: 'Editor / Designer',
-    PRINTER_DELIVERY_STAFF: 'Printer / Delivery Staff',
+    EDITOR_DESIGNER: 'Editor',
+    STAFF: 'Staff',
+    PRINTER_DELIVERY_STAFF: 'Print & Delivery Staff',
+    REPORT_MANAGER: 'Report Manager',
+    FINANCE: 'Finance Team',
     CUSTOMER: 'Customer',
 };
 
@@ -65,7 +97,8 @@ const ALL = Object.keys(PERMISSIONS).filter((p) => p !== 'customer.portal') as P
 
 export const ROLE_PERMISSIONS: Record<RoleCode, Permission[]> = {
     SUPER_ADMIN: ALL,
-    STUDIO_OWNER: ALL.filter((p) => !['roles.manage'].includes(p)),
+    STUDIO_OWNER: ALL,
+    COMPANY_ADMIN: ALL,
     MANAGER: [
         'dashboard.view',
         'customers.view',
@@ -90,7 +123,10 @@ export const ROLE_PERMISSIONS: Record<RoleCode, Permission[]> = {
     ],
     PHOTOGRAPHER: ['events.assigned', 'photos.upload'],
     EDITOR_DESIGNER: ['events.assigned', 'photos.edit', 'proofs.manage'],
+    STAFF: ['orders.view', 'printing.manage', 'delivery.manage', 'events.assigned'],
     PRINTER_DELIVERY_STAFF: ['orders.view', 'printing.manage', 'delivery.manage'],
+    REPORT_MANAGER: ['dashboard.view', 'reports.view', 'bookings.view', 'orders.view', 'payments.view', 'customers.view'],
+    FINANCE: ['dashboard.view', 'payments.view', 'payments.manage', 'orders.view', 'reports.view'],
     CUSTOMER: ['customer.portal'],
 };
 
@@ -98,9 +134,13 @@ export const ROLE_PERMISSIONS: Record<RoleCode, Permission[]> = {
 export const ROLE_HOME: Record<RoleCode, string> = {
     SUPER_ADMIN: '/admin/dashboard',
     STUDIO_OWNER: '/admin/dashboard',
+    COMPANY_ADMIN: '/admin/dashboard',
     MANAGER: '/admin/dashboard',
     PHOTOGRAPHER: '/photographer/dashboard',
     EDITOR_DESIGNER: '/editor/dashboard',
+    STAFF: '/delivery/dashboard',
     PRINTER_DELIVERY_STAFF: '/delivery/dashboard',
+    REPORT_MANAGER: '/admin/reports',
+    FINANCE: '/admin/payments',
     CUSTOMER: '/customer/dashboard',
 };

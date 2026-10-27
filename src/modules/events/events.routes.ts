@@ -1,8 +1,12 @@
-// Developer by: Buildnexdev.in
-// Devevloper : Nandhakumar@gmail.com
-// Last Edited : 06-10-2026
+/* 
+ * Developer by: Buildnexdev.in
+ * Devevloper : Nandhakumar@gmail.com
+ * Last Edited : 06-10-2026
+ */
 import { Router } from 'express';
+import sharp from 'sharp';
 import { z } from 'zod';
+import { imageUpload } from '../../lib/upload.js';
 import { authenticate, hasPermission, requirePermission } from '../../middleware/auth.js';
 import { validate } from '../../middleware/validate.js';
 import { asyncHandler, created, ok } from '../../utils/http.js';
@@ -22,11 +26,28 @@ const eventBody = z.object({
     endTime: hhmm,
     venue: optionalText(255),
     notes: optionalText(3000),
+    force: z.boolean().optional(),
 });
 
 const router = Router();
 router.use(authenticate);
 
+/*
+ * CHECK AVAILABILITY OF THE EVENT SLOT
+*/
+router.get(
+    '/availability',
+    requirePermission('events.view', 'events.manage', 'bookings.manage', 'bookings.view'),
+    validate(z.object({ date: ymd, start: hhmm, end: hhmm, excludeEventId: z.coerce.number().int().positive().optional(), excludeBookingId: z.coerce.number().int().positive().optional() }), 'query'),
+    asyncHandler(async (req, res) => {
+        const q = req.query as unknown as { date: string; start?: string | null; end?: string | null; excludeEventId?: number; excludeBookingId?: number };
+        ok(res, await events.checkAvailability({ eventDate: q.date, startTime: q.start, endTime: q.end, excludeEventId: q.excludeEventId, excludeBookingId: q.excludeBookingId }));
+    }),
+);
+
+/*
+ * LIST ALL EVENTS
+*/
 router.get(
     '/',
     validate(pageQuery.extend({ status: z.enum(events.EVENT_STATUSES).optional(), from: ymd.optional(), to: ymd.optional(), customerId: z.coerce.number().int().optional() }), 'query'),
@@ -41,6 +62,9 @@ router.get(
     }),
 );
 
+/*
+ * LIST ALL EVENTS ASSIGNED TO THE USER
+*/
 router.get(
     '/mine',
     requirePermission('events.assigned', 'photos.upload', 'photos.edit'),
@@ -50,6 +74,9 @@ router.get(
     }),
 );
 
+/*
+ * CREATE A NEW EVENT
+*/
 router.post(
     '/',
     requirePermission('events.manage'),
@@ -60,6 +87,9 @@ router.post(
     }),
 );
 
+/*
+ * GET A SPECIFIC EVENT
+*/
 router.get(
     '/:id',
     validate(idParam, 'params'),
@@ -76,6 +106,9 @@ router.get(
     }),
 );
 
+/*
+ * UPDATE A SPECIFIC EVENT
+*/
 router.put(
     '/:id',
     requirePermission('events.manage'),
@@ -86,6 +119,9 @@ router.put(
     }),
 );
 
+/*
+ * DELETE A SPECIFIC EVENT
+*/
 router.delete(
     '/:id',
     requirePermission('events.manage'),
@@ -96,6 +132,9 @@ router.delete(
     }),
 );
 
+/*
+ * ACTIONS FOR THE EVENT
+*/
 const ACTION_MESSAGES: Record<events.EventAction, string> = {
     start: 'Event is live',
     stop: 'Shoot stopped, uploads continue',
@@ -105,6 +144,9 @@ const ACTION_MESSAGES: Record<events.EventAction, string> = {
     reopen: 'Event reopened',
 };
 
+/*
+ * ACTIONS FOR THE EVENT
+*/
 for (const action of Object.keys(ACTION_MESSAGES) as events.EventAction[]) {
     router.post(
         `/:id/${action}`,
@@ -115,6 +157,24 @@ for (const action of Object.keys(ACTION_MESSAGES) as events.EventAction[]) {
     );
 }
 
+/*
+ * UPLOAD A COVER IMAGE FOR THE EVENT
+*/
+router.post(
+    '/:id/cover',
+    requirePermission('events.manage'),
+    validate(idParam, 'params'),
+    imageUpload.single('cover'),
+    asyncHandler(async (req, res) => {
+        if (!req.file) throw forbidden('Choose a cover image.');
+        const image = await sharp(req.file.buffer).rotate().resize(1600, 1600, { fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 82 }).toBuffer();
+        ok(res, await events.saveCover(Number(req.params.id), image, auditCtx(req)), 'Cover image saved');
+    }),
+);
+
+/*
+ * ASSIGN A STAFF TO THE EVENT
+*/
 router.post(
     '/:id/staff',
     requirePermission('staff.assign'),
@@ -131,6 +191,9 @@ router.post(
     }),
 );
 
+/*
+ * REMOVE A STAFF FROM THE EVENT
+*/
 router.delete(
     '/:id/staff/:assignmentId',
     requirePermission('staff.assign'),
@@ -140,6 +203,9 @@ router.delete(
     }),
 );
 
+/*
+ * UPDATE THE TASK STATUS FOR THE EVENT
+*/
 router.put(
     '/:id/my-task',
     validate(idParam, 'params'),

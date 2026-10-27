@@ -4,6 +4,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import mysql, { type Pool, type PoolConnection, type ResultSetHeader, type RowDataPacket } from 'mysql2/promise';
 import { config } from '../config/env.js';
+import { aliasPrimaryKeyFields, rewriteSql } from './primary-keys.js';
 
 export interface TenantScope {
     pool: Pool;
@@ -96,7 +97,8 @@ export type Row = RowDataPacket & Record<string, any>;
 
 export async function query<T = Row>(sql: string, params: unknown[] = [], db?: Db): Promise<T[]> {
     const target = db ?? currentPool();
-    const [rows] = await target.query<RowDataPacket[]>(sql, params);
+    const [rows] = await target.query<RowDataPacket[]>(rewriteSql(sql), params);
+    aliasPrimaryKeyFields(rows);
     return rows as unknown as T[];
 }
 
@@ -105,9 +107,16 @@ export async function queryOne<T = Row>(sql: string, params: unknown[] = [], db?
     return rows[0] ?? null;
 }
 
+/** Studio row new users are attached to. Prefers the primary company. */
+export async function primaryCompanyId(db?: Db): Promise<number> {
+    const row = await queryOne<{ id: number }>('SELECT id FROM tblCompany ORDER BY is_primary DESC, id ASC LIMIT 1', [], db);
+    if (!row) throw new Error('No company is available to assign to the user.');
+    return row.id;
+}
+
 export async function execute(sql: string, params: unknown[] = [], db?: Db): Promise<ResultSetHeader> {
     const target = db ?? currentPool();
-    const [result] = await target.query<ResultSetHeader>(sql, params);
+    const [result] = await target.query<ResultSetHeader>(rewriteSql(sql), params);
     return result;
 }
 

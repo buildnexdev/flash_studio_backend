@@ -160,7 +160,16 @@ router.post(
     otpLimiter,
     validate(z.object({ email })),
     asyncHandler(async (req, res) => {
-        ok(res, await auth.forgotPassword(req.body.email), 'If the email is registered, a reset link has been sent.');
+        ok(res, await auth.forgotPassword(req.body.email), 'If the email is registered, a reset code has been sent.');
+    }),
+);
+
+router.post(
+    '/forgot-password/verify',
+    authLimiter,
+    validate(z.object({ email, code: z.string().regex(/^\d{6}$/, 'Enter the 6 digit code') })),
+    asyncHandler(async (req, res) => {
+        ok(res, await auth.verifyResetOtp(req.body.email, req.body.code), 'Code verified. You can set a new password.');
     }),
 );
 

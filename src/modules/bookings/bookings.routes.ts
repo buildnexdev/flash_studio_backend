@@ -105,6 +105,27 @@ router.post(
     }),
 );
 
+router.get(
+    '/quotations/:qid/pdf',
+    validate(qParam, 'params'),
+    asyncHandler(async (req, res) => {
+        const pdf = await bookings.quotationPdf(Number(req.params.qid), req.user!);
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="${pdf.filename}"`);
+        res.send(pdf.bytes);
+    }),
+);
+
+router.post(
+    '/quotations/:qid/revise',
+    requirePermission('bookings.manage'),
+    validate(qParam, 'params'),
+    validate(z.object({ note: optionalText(500) })),
+    asyncHandler(async (req, res) => {
+        ok(res, await bookings.reviseQuotation(Number(req.params.qid), req.body.note ?? null, req.user!, auditCtx(req)), 'Revision saved as a new draft');
+    }),
+);
+
 router.post(
     '/:id/quotations',
     requirePermission('bookings.manage'),

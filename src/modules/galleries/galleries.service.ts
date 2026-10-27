@@ -27,11 +27,13 @@ export interface GalleryRow {
     event_title: string;
     event_status: string;
     event_date: string;
+    event_venue?: string | null;
+    cover_key?: string | null;
 }
 
 export async function loadGallery(id: number): Promise<GalleryRow> {
     const g = await queryOne<GalleryRow>(
-        `SELECT g.*, e.customer_id, e.title AS event_title, e.status AS event_status, e.event_date
+        `SELECT g.*, e.customer_id, e.title AS event_title, e.status AS event_status, e.event_date, e.venue AS event_venue, e.cover_key
            FROM tblGallery g JOIN tblEvent e ON e.id = g.event_id AND e.deleted_at IS NULL
           WHERE g.id = ? AND g.deleted_at IS NULL`,
         [id],
@@ -66,6 +68,53 @@ export async function listGalleries(q: { page: number; pageSize: number; search?
            ${base} WHERE ${w} ORDER BY g.id DESC LIMIT ? OFFSET ?`,
         [...params, q.pageSize, offsetOf(q)],
     );
+    return paged(items, total, q);
+}
+
+export async function listQrCodes(q: { page: number; pageSize: number; search?: string; state?: string }) {
+    const where = ['g.deleted_at IS NULL', 'e.deleted_at IS NULL'];
+    const params: unknown[] = [];
+    if (q.search) {
+        where.push('(t.label LIKE ? OR g.title LIKE ? OR e.title LIKE ? OR e.event_code LIKE ? OR c.name LIKE ? OR t.token_hint LIKE ?)');
+        const term = likeTerm(q.search);
+        params.push(term, term, term, term, term, term);
+    }
+    if (q.state === 'REVOKED') where.push('t.revoked_at IS NOT NULL');
+    else if (q.state === 'EXPIRED') where.push('t.revoked_at IS NULL AND t.expires_at IS NOT NULL AND t.expires_at <= UTC_TIMESTAMP()');
+    else if (q.state === 'EXHAUSTED') where.push('t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at > UTC_TIMESTAMP()) AND t.max_uses IS NOT NULL AND t.use_count >= t.max_uses');
+    else if (q.state === 'ACTIVE') where.push('t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at > UTC_TIMESTAMP()) AND (t.max_uses IS NULL OR t.use_count < t.max_uses)');
+    const w = where.join(' AND ');
+    const base = 'FROM tblGalleryToken t JOIN tblGallery g ON g.id = t.gallery_id JOIN tblEvent e ON e.id = g.event_id JOIN tblCustomer c ON c.id = e.customer_id';
+    const total = (await queryOne<{ n: number }>(`SELECT COUNT(*) AS n ${base} WHERE ${w}`, params))?.n ?? 0;
+    const rows = await query<{
+        id: number;
+        gallery_id: number;
+        scope: string;
+        album_id: number | null;
+        photo_id: number | null;
+        label: string | null;
+        token_hint: string;
+        expires_at: Date | string | null;
+        revoked_at: Date | string | null;
+        max_uses: number | null;
+        use_count: number;
+        last_used_at: Date | string | null;
+        created_at: Date | string;
+        gallery_title: string;
+        event_code: string;
+        event_title: string;
+        customer_name: string;
+    }>(
+        `SELECT t.id, t.gallery_id, t.scope, t.album_id, t.photo_id, t.label, t.token_hint, t.expires_at, t.revoked_at, t.max_uses, t.use_count, t.last_used_at, t.created_at,
+                g.title AS gallery_title, e.event_code, e.title AS event_title, c.name AS customer_name
+           ${base} WHERE ${w} ORDER BY t.id DESC LIMIT ? OFFSET ?`,
+        [...params, q.pageSize, offsetOf(q)],
+    );
+    const now = new Date();
+    const items = rows.map((t) => {
+        const state = t.revoked_at ? 'REVOKED' : t.expires_at && new Date(t.expires_at) < now ? 'EXPIRED' : t.max_uses && Number(t.use_count) >= Number(t.max_uses) ? 'EXHAUSTED' : 'ACTIVE';
+        return { ...t, state };
+    });
     return paged(items, total, q);
 }
 
@@ -258,9 +307,9 @@ export async function accessWithToken(rawToken: string, user: AuthUser | undefin
         throw unauthorized('This QR code has reached its scan limit.');
     }
     const g = await loadGallery(t.gallery_id);
-    if (g.status === 'DRAFT' || g.status === 'ARCHIVED') {
+    if (g.status === 'ARCHIVED') {
         await logAccess(t.gallery_id, t.id, userId, 'INVALID', ip, ua);
-        throw forbidden(g.status === 'DRAFT' ? 'This gallery is not open yet. Photos will appear once the event starts.' : 'This gallery has been archived.');
+        throw forbidden('This gallery has been archived.');
     }
     await execute('UPDATE tblGalleryToken SET use_count = use_count + 1, last_used_at = UTC_TIMESTAMP() WHERE id = ?', [t.id]);
     await logAccess(t.gallery_id, t.id, userId, 'GRANTED', ip, ua);

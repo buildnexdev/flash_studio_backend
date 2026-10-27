@@ -60,6 +60,14 @@ router.get(
     }),
 );
 
+router.get(
+    '/qr',
+    validate(pageQuery.extend({ state: z.enum(['ACTIVE', 'REVOKED', 'EXPIRED', 'EXHAUSTED']).optional() }), 'query'),
+    asyncHandler(async (req, res) => {
+        ok(res, await galleries.listQrCodes(req.query as unknown as Parameters<typeof galleries.listQrCodes>[0]));
+    }),
+);
+
 router.post(
     '/',
     validate(z.object({ eventId: z.coerce.number().int().positive(), title: z.string().trim().min(2).max(160) })),

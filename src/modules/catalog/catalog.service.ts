@@ -15,10 +15,12 @@ const slugify = (s: string) =>
         .replace(/^-|-$/g, '')
         .slice(0, 120) || `item-${Date.now()}`;
 
-async function uniqueSlug(table: 'services' | 'packages', name: string, exceptId?: number) {
+const SLUG_TABLE = { services: 'tblService', packages: 'tblPackage' } as const;
+
+async function uniqueSlug(table: keyof typeof SLUG_TABLE, name: string, exceptId?: number) {
     const base = slugify(name);
     let slug = base;
-    for (let i = 2; await queryOne(`SELECT id FROM ${table} WHERE slug = ? AND id <> ?`, [slug, exceptId ?? 0]); i++) slug = `${base}-${i}`;
+    for (let i = 2; await queryOne(`SELECT id FROM ${SLUG_TABLE[table]} WHERE slug = ? AND id <> ?`, [slug, exceptId ?? 0]); i++) slug = `${base}-${i}`;
     return slug;
 }
 

@@ -3,6 +3,7 @@
 // Last Edited : 06-10-2026
 import nodemailer, { type Transporter } from 'nodemailer';
 import { config } from '../config/env.js';
+import { BRAND_NAME, brandLogoUrl } from './brand.js';
 
 /**
  * Outbound delivery channels. Each channel is only active when configured in the environment;
@@ -28,17 +29,26 @@ function mailer(): Transporter | null {
 
 const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 
-export async function sendEmail(to: string, subject: string, text: string, link?: string): Promise<ChannelResult> {
+export async function sendEmail(
+    to: string,
+    subject: string,
+    text: string,
+    link?: string,
+    attachments?: { filename: string; content: Buffer; contentType: string }[],
+): Promise<ChannelResult> {
     const t = mailer();
     if (!t) return { sent: false, reason: 'SMTP not configured' };
     if (config.isTest) return { sent: false, reason: 'test mode' };
     const url = link ? new URL(link, config.FRONTEND_URL).toString() : null;
-    const html = `<div style="font-family:Arial,sans-serif;font-size:15px;color:#0f172a;line-height:1.6">
-        <p>${escapeHtml(text).replace(/\n/g, '<br>')}</p>
-        ${url ? `<p><a href="${escapeHtml(url)}" style="display:inline-block;background:#4f46e5;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none">Open</a></p>` : ''}
+    const logo = brandLogoUrl();
+    const html = `<div style="font-family:Arial,sans-serif;font-size:15px;color:#1c1917;line-height:1.6;max-width:560px">
+        <p style="margin:0 0 16px"><img src="${escapeHtml(logo)}" alt="${escapeHtml(BRAND_NAME)}" width="72" height="72" style="display:block;height:72px;width:auto;max-width:160px;object-fit:contain" /></p>
+        <p style="margin:0 0 12px">${escapeHtml(text).replace(/\n/g, '<br>')}</p>
+        ${url ? `<p style="margin:16px 0 0"><a href="${escapeHtml(url)}" style="display:inline-block;background:#b45309;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600">Open</a></p>` : ''}
+        <p style="margin:24px 0 0;font-size:12px;color:#78716c">${escapeHtml(BRAND_NAME)}</p>
     </div>`;
     try {
-        await t.sendMail({ from: config.MAIL_FROM, to, subject, text: url ? `${text}\n\n${url}` : text, html });
+        await t.sendMail({ from: config.MAIL_FROM, to, subject, text: url ? `${text}\n\n${url}` : text, html, attachments });
         return { sent: true };
     } catch (err) {
         console.error('[email] send failed', (err as Error).message);
