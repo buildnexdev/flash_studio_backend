@@ -6,14 +6,14 @@ import { z } from 'zod';
 import { query } from '../../db/pool.js';
 import { imageUpload } from '../../lib/upload.js';
 import { optionalAuth } from '../../middleware/auth.js';
-import { galleryAccessLimiter } from '../../middleware/rate-limit.js';
+import { galleryAccessLimiter, otpLimiter } from '../../middleware/rate-limit.js';
 import { validate } from '../../middleware/validate.js';
 import { badRequest, forbidden, unauthorized } from '../../utils/errors.js';
 import { asyncHandler, clientIp, created, ok, userAgent } from '../../utils/http.js';
 import { optionalText } from '../../utils/schemas.js';
 import { faceSearchEnabled, searchBySelfie } from '../ai/ai.service.js';
 import { auditCtx } from '../audit/audit.service.js';
-import { assertFaceSearchAllowed, readEventPhone, requestEventOtp, verifyEventOtp } from './event-access.js';
+import { assertEventCustomerPhone, assertFaceSearchAllowed, claimEventCustomer, readEventPhone, requestEventOtp, verifyEventOtp } from './event-access.js';
 import { createOrder } from '../orders/orders.service.js';
 import { listGalleryPhotos, openGalleryPhoto } from '../photos/photos.service.js';
 import * as selections from '../selections/selections.service.js';
@@ -30,8 +30,12 @@ const access = async (req: Request) => {
     const a = await resolveAccess(Number(req.params.galleryId), req.user, req.gallery);
     const gallerySettings = await getSetting('gallery');
     const claim = readEventPhone(typeof req.headers['x-event-phone'] === 'string' ? req.headers['x-event-phone'] : undefined);
-    const phoneVerified = !!claim && claim.eventId === a.gallery.event_id;
-    if (gallerySettings.requirePhoneVerification && !a.isOwner && !a.isStaff && !phoneVerified) {
+    let phoneVerified = !!claim && claim.eventId === a.gallery.event_id;
+    if (!a.isOwner && !a.isStaff) {
+        if (!claim || claim.eventId !== a.gallery.event_id) throw forbidden('Enter the phone number for this event.');
+        await assertEventCustomerPhone(a.gallery.event_id, claim.phone);
+        phoneVerified = true;
+    } else if (gallerySettings.requirePhoneVerification && !phoneVerified) {
         throw forbidden('Verify your phone number to open this event gallery.');
     }
     return { ...a, phoneVerified, requirePhoneVerification: gallerySettings.requirePhoneVerification };
@@ -227,6 +231,17 @@ router.post(
         const user = requireUser(req);
         if (!user.customerId) throw forbidden('Sign in with a customer account to buy photos.');
         created(res, await createOrder(req.body, user, await access(req), auditCtx(req)), 'Order created');
+    }),
+);
+
+router.post(
+    '/:galleryId/phone/claim',
+    otpLimiter,
+    validate(gParams, 'params'),
+    validate(z.object({ phone: z.string().trim().min(8).max(20) })),
+    asyncHandler(async (req, res) => {
+        const a = await resolveAccess(Number(req.params.galleryId), req.user, req.gallery);
+        ok(res, await claimEventCustomer(a.gallery.event_id, a.gallery.id, req.body.phone), 'Phone accepted');
     }),
 );
 

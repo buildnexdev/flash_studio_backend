@@ -100,6 +100,7 @@ export function createApp() {
                 'Authorization',
                 'X-Requested-With',
                 'X-Gallery-Session',
+                'X-Event-Phone',
                 'X-Client',
                 'X-Studio-Slug',
                 'Accept',
