@@ -7,6 +7,7 @@ import { config } from './config/env.js';
 import { renamePrimaryKeys } from './db/primary-keys.js';
 import { ensureFlashStudio } from './db/seed.js';
 import { closePool, pool } from './db/pool.js';
+import { storage } from './lib/storage.js';
 import { getIo, initRealtime } from './lib/realtime.js';
 import { photoQueue, recoverPendingPhotos } from './modules/photos/photos.service.js';
 
@@ -32,7 +33,11 @@ async function main() {
     initRealtime(server);
 
     server.listen(config.PORT, () => {
-        console.log(`[photolab] API listening on ${config.BACKEND_URL} (port ${config.PORT}, ${config.NODE_ENV})`);
+        const storageLabel = storage.name === 's3' ? `s3 bucket ${config.AWS_BUCKET} (${config.AWS_REGION})` : 'local disk';
+        console.log(`[photolab] API listening on ${config.BACKEND_URL} (port ${config.PORT}, ${config.NODE_ENV}, storage: ${storageLabel})`);
+        if (config.isProd && storage.name === 'local') {
+            console.warn('[photolab] STORAGE_DRIVER is local. Set STORAGE_DRIVER=s3, AWS_S3_BUCKET, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and AWS_REGION to the bucket region.');
+        }
     });
 
     const recovered = await recoverPendingPhotos();
