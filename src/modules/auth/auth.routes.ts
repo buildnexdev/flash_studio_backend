@@ -19,11 +19,22 @@ import * as auth from './auth.service.js';
 
 export const REFRESH_COOKIE = 'pl_rt';
 
+/** Vercel and Render are different sites, so a Strict cookie is not sent on refresh. */
+const crossSite = config.isProd || process.env.RENDER === 'true';
+
 const cookieOptions = (expires?: Date): CookieOptions => ({
     httpOnly: true,
-    secure: config.isProd,
-    sameSite: 'strict',
+    secure: crossSite,
+    sameSite: crossSite ? 'none' : 'lax',
     path: '/api/auth',
+    ...(expires ? { expires } : {}),
+});
+
+const studioCookieOptions = (expires?: Date): CookieOptions => ({
+    httpOnly: true,
+    secure: crossSite,
+    sameSite: crossSite ? 'none' : 'lax',
+    path: '/api',
     ...(expires ? { expires } : {}),
 });
 
@@ -34,9 +45,9 @@ function sendSession(req: Request, res: Response, session: Awaited<ReturnType<ty
     const expires = new Date(session.refreshExpiresAt);
     res.cookie(REFRESH_COOKIE, session.refreshToken, cookieOptions(expires));
     if (session.studioSlug) {
-        res.cookie(STUDIO_COOKIE, session.studioSlug, { httpOnly: true, secure: config.isProd, sameSite: 'strict', path: '/api', expires });
+        res.cookie(STUDIO_COOKIE, session.studioSlug, studioCookieOptions(expires));
     } else {
-        res.clearCookie(STUDIO_COOKIE, { path: '/api' });
+        res.clearCookie(STUDIO_COOKIE, studioCookieOptions());
     }
     const isMobile = req.headers['x-client'] === 'mobile';
     const { refreshToken, ...rest } = session;
@@ -103,7 +114,7 @@ router.post(
     asyncHandler(async (req, res) => {
         await auth.logout(readRefresh(req), auditCtx(req));
         res.clearCookie(REFRESH_COOKIE, cookieOptions());
-        res.clearCookie(STUDIO_COOKIE, { path: '/api' });
+        res.clearCookie(STUDIO_COOKIE, studioCookieOptions());
         ok(res, null, 'Signed out');
     }),
 );
