@@ -100,10 +100,14 @@ if (env.NODE_ENV === 'production') {
     }
 }
 
+const s3Ready = Boolean(env.AWS_BUCKET && env.AWS_ACCESS_KEY && env.AWS_SECRET_KEY);
+
 export const config = {
     ...env,
     isProd: env.NODE_ENV === 'production',
     isTest: env.NODE_ENV === 'test',
+    /** Production uses S3 when the bucket and keys are set, even if STORAGE_DRIVER was left as local. */
+    storageDriver: (env.STORAGE_DRIVER === 's3' || (env.NODE_ENV === 'production' && s3Ready) ? 's3' : 'local') as 'local' | 's3',
     corsOrigins: [env.FRONTEND_URL, ...env.CORS_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean)],
     maxUploadBytes: env.MAX_UPLOAD_MB * 1024 * 1024,
 };
