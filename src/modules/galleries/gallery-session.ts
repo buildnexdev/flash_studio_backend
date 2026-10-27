@@ -14,6 +14,8 @@ export interface GallerySession {
     albumId: number | null;
     photoId: number | null;
     sessionId: string;
+    /** Set after the visitor enters the event customer's phone on a /g/ link. */
+    customerPhone?: string;
 }
 
 const SECRET = () => `${config.JWT_SECRET}:gallery`;
@@ -27,7 +29,16 @@ export function verifyGallerySession(token: string): GallerySession | null {
     try {
         const p = jwt.verify(token, SECRET(), { issuer: 'photolab' }) as GallerySession & { typ: string };
         if (p.typ !== 'gallery') return null;
-        return { galleryId: p.galleryId, tokenId: p.tokenId, scope: p.scope, albumId: p.albumId, photoId: p.photoId, sessionId: p.sessionId };
+        const phone = typeof p.customerPhone === 'string' ? p.customerPhone.replace(/\D/g, '').slice(-10) : undefined;
+        return {
+            galleryId: p.galleryId,
+            tokenId: p.tokenId,
+            scope: p.scope,
+            albumId: p.albumId,
+            photoId: p.photoId,
+            sessionId: p.sessionId,
+            ...(phone && phone.length === 10 ? { customerPhone: phone } : {}),
+        };
     } catch {
         return null;
     }

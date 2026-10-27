@@ -120,8 +120,11 @@ describe('event management workflow', () => {
         expect(rejected.status).toBe(403);
         const claimed = await api().post(`/api/gallery/${galleryId}/phone/claim`).set('X-Gallery-Session', session).send({ phone: '9876501234' });
         expect(claimed.status, JSON.stringify(claimed.body)).toBe(200);
+        expect(claimed.body.data.session).toBeTruthy();
         const locked = await api().get(`/api/gallery/${galleryId}`).set('X-Gallery-Session', session);
         expect(locked.status).toBe(403);
+        const openedByClaim = await api().get(`/api/gallery/${galleryId}`).set('X-Gallery-Session', claimed.body.data.session);
+        expect(openedByClaim.status, JSON.stringify(openedByClaim.body)).toBe(200);
 
         const code = await api().post(`/api/gallery/${galleryId}/phone/request`).set('X-Gallery-Session', session).send({ phone: '9876501234' });
         expect(code.status, JSON.stringify(code.body)).toBe(200);

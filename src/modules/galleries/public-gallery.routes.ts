@@ -19,7 +19,7 @@ import { listGalleryPhotos, openGalleryPhoto } from '../photos/photos.service.js
 import * as selections from '../selections/selections.service.js';
 import { getSetting } from '../settings/settings.service.js';
 import { storage } from '../../lib/storage.js';
-import { gallerySession } from './gallery-session.js';
+import { gallerySession, signGallerySession } from './gallery-session.js';
 import { accessWithToken, resolveAccess, scopeFilter } from './galleries.service.js';
 
 const router = Router();
@@ -29,16 +29,24 @@ const photoParams = gParams.extend({ photoId: z.coerce.number().int().positive()
 const access = async (req: Request) => {
     const a = await resolveAccess(Number(req.params.galleryId), req.user, req.gallery);
     const gallerySettings = await getSetting('gallery');
-    const claim = readEventPhone(typeof req.headers['x-event-phone'] === 'string' ? req.headers['x-event-phone'] : undefined);
-    let phoneVerified = !!claim && claim.eventId === a.gallery.event_id;
+    const headerClaim = readEventPhone(typeof req.headers['x-event-phone'] === 'string' ? req.headers['x-event-phone'] : undefined);
+    const eventId = Number(a.gallery.event_id);
+    const sessionPhone = req.gallery?.customerPhone;
+    const claimPhone =
+        headerClaim && Number(headerClaim.eventId) === eventId
+            ? headerClaim.phone
+            : sessionPhone && /^\d{10}$/.test(sessionPhone)
+              ? sessionPhone
+              : null;
+    let phoneVerified = !!claimPhone;
     // Public /g/ links always carry a gallery session. Those must match the event customer phone,
     // even if a studio staff account is signed in in the same browser.
     const guestLink = !!req.gallery;
     if (guestLink || (!a.isOwner && !a.isStaff)) {
-        if (!claim || claim.eventId !== a.gallery.event_id) {
+        if (!claimPhone) {
             throw forbidden('Enter the phone number for this event.', [], 'PHONE_REQUIRED');
         }
-        await assertEventCustomerPhone(a.gallery.event_id, claim.phone);
+        await assertEventCustomerPhone(eventId, claimPhone);
         phoneVerified = true;
     } else if (gallerySettings.requirePhoneVerification && !phoneVerified) {
         throw forbidden('Verify your phone number to open this event gallery.', [], 'PHONE_REQUIRED');
@@ -245,8 +253,11 @@ router.post(
     validate(gParams, 'params'),
     validate(z.object({ phone: z.string().trim().min(8).max(20) })),
     asyncHandler(async (req, res) => {
+        if (!req.gallery) throw unauthorized('Scan the QR code again to open this gallery.');
         const a = await resolveAccess(Number(req.params.galleryId), req.user, req.gallery);
-        ok(res, await claimEventCustomer(a.gallery.event_id, a.gallery.id, req.body.phone), 'Phone accepted');
+        const claimed = await claimEventCustomer(Number(a.gallery.event_id), Number(a.gallery.id), req.body.phone);
+        const session = signGallerySession({ ...req.gallery, customerPhone: claimed.phone });
+        ok(res, { ...claimed, session }, 'Phone accepted');
     }),
 );
 
@@ -265,8 +276,11 @@ router.post(
     validate(gParams, 'params'),
     validate(z.object({ phone: z.string().trim().min(10).max(20), code: z.string().regex(/^\d{6}$/), consent: z.boolean().default(false) })),
     asyncHandler(async (req, res) => {
+        if (!req.gallery) throw unauthorized('Scan the QR code again to open this gallery.');
         const a = await resolveAccess(Number(req.params.galleryId), req.user, req.gallery);
-        ok(res, await verifyEventOtp(a.gallery.event_id, a.gallery.id, req.body.phone, req.body.code, req.body.consent), 'Phone verified for this event');
+        const verified = await verifyEventOtp(Number(a.gallery.event_id), Number(a.gallery.id), req.body.phone, req.body.code, req.body.consent);
+        const session = signGallerySession({ ...req.gallery, customerPhone: verified.phone });
+        ok(res, { ...verified, session }, 'Phone verified for this event');
     }),
 );
 
