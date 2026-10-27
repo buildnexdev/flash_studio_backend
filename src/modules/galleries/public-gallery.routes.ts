@@ -32,11 +32,13 @@ const access = async (req: Request) => {
     const claim = readEventPhone(typeof req.headers['x-event-phone'] === 'string' ? req.headers['x-event-phone'] : undefined);
     let phoneVerified = !!claim && claim.eventId === a.gallery.event_id;
     if (!a.isOwner && !a.isStaff) {
-        if (!claim || claim.eventId !== a.gallery.event_id) throw forbidden('Enter the phone number for this event.');
+        if (!claim || claim.eventId !== a.gallery.event_id) {
+            throw forbidden('Enter the phone number for this event.', [], 'PHONE_REQUIRED');
+        }
         await assertEventCustomerPhone(a.gallery.event_id, claim.phone);
         phoneVerified = true;
     } else if (gallerySettings.requirePhoneVerification && !phoneVerified) {
-        throw forbidden('Verify your phone number to open this event gallery.');
+        throw forbidden('Verify your phone number to open this event gallery.', [], 'PHONE_REQUIRED');
     }
     return { ...a, phoneVerified, requirePhoneVerification: gallerySettings.requirePhoneVerification };
 };
