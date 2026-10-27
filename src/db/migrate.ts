@@ -8,7 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import mysql from 'mysql2/promise';
 import { config } from '../config/env.js';
-import { renamePrimaryKeys } from './primary-keys.js';
+import { loadPrimaryKeyColumns, renamePrimaryKeys, rewriteReferencedPrimaryKeys } from './primary-keys.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const migrationsDir = path.resolve(here, 'migrations');
@@ -74,6 +74,7 @@ export async function runMigrations(options: { reset?: boolean; log?: boolean; d
 
         const [rows] = await server.query('SELECT name FROM tblSchemaMigration');
         const applied = new Set((rows as { name: string }[]).map((r) => r.name));
+        const pkByTable = await loadPrimaryKeyColumns(server);
         const files = (await readdir(migrationsDir)).filter((f) => f.endsWith('.sql')).sort();
         const ran: string[] = [];
         for (const file of files) {
@@ -88,17 +89,16 @@ export async function runMigrations(options: { reset?: boolean; log?: boolean; d
             for (const statement of statements) {
                 if (skipRest) break;
                 try {
-                    await server.query(`${statement};`);
+                    await server.query(rewriteReferencedPrimaryKeys(`${statement};`, pkByTable));
                 } catch (err) {
                     const code = (err as { errno?: number }).errno;
-                    // 007 targets renamed primary keys. A fresh database still uses `id` until the rename pass, and 005 already added the columns.
-                    if (file.startsWith('007_') && code === 1054) {
+                    // 005 and 007 each target one primary-key name. Unknown column means this file is for the other shape.
+                    if (code === 1054 && (file.startsWith('007_') || file === '005_user_company_role.sql')) {
                         skipRest = true;
                         continue;
                     }
-                        // Duplicate column, duplicate key, or table left behind by a failed attempt
-                    // 1054 unknown column: 005 uses `id` but PKs may already be userID/companyID — use 007 instead
-                    if (code === 1050 || code === 1060 || code === 1061 || code === 1022 || code === 1062 || code === 1826 || (file === '005_user_company_role.sql' && code === 1054)) continue;
+                    // Duplicate column, duplicate key, or table left behind by a failed attempt
+                    if (code === 1050 || code === 1060 || code === 1061 || code === 1022 || code === 1062 || code === 1826) continue;
                     throw err;
                 }
             }
