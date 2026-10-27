@@ -23,7 +23,7 @@ describe('booking-to-delivery workflow', () => {
     let customer: string, customerId: number;
     let bookingId: number, eventId: number, galleryId: number;
     let photoIds: number[] = [];
-    let qrToken: string, qrTokenId: number, gallerySession: string;
+    let qrToken: string, qrTokenId: number, gallerySession: string, phoneProof = '';
     let bookingTotal: number, advance: number;
 
     beforeAll(async () => {
@@ -162,16 +162,19 @@ describe('booking-to-delivery workflow', () => {
         const access = await api().post('/api/gallery/access').send({ token: qrToken });
         expect(access.status).toBe(200);
         gallerySession = access.body.data.session;
+        const claimed = await api().post(`/api/gallery/${galleryId}/phone/claim`).set('X-Gallery-Session', gallerySession).send({ phone: '9876543210' });
+        expect(claimed.status, JSON.stringify(claimed.body)).toBe(200);
+        phoneProof = claimed.body.data.proof as string;
 
-        const info = await api().get(`/api/gallery/${galleryId}`).set('X-Gallery-Session', gallerySession);
+        const info = await api().get(`/api/gallery/${galleryId}`).set('X-Gallery-Session', gallerySession).set('X-Event-Phone', phoneProof);
         expect(info.body.data).toMatchObject({ photoCount: 3, watermark: true, isLive: true, isOwner: false });
         expect(info.body.data.pricing.photoDownload).toBe(9900);
 
-        const photos = await api().get(`/api/gallery/${galleryId}/photos`).set('X-Gallery-Session', gallerySession);
+        const photos = await api().get(`/api/gallery/${galleryId}/photos`).set('X-Gallery-Session', gallerySession).set('X-Event-Phone', phoneProof);
         expect(photos.body.data.total).toBe(3);
         expect(JSON.stringify(photos.body.data)).not.toMatch(/original_key|originals\//);
 
-        const open = await api().get(`/api/gallery/${galleryId}/photos/${photoIds[0]}`).set('X-Gallery-Session', gallerySession);
+        const open = await api().get(`/api/gallery/${galleryId}/photos/${photoIds[0]}`).set('X-Gallery-Session', gallerySession).set('X-Event-Phone', phoneProof);
         expect(open.body.data.can_download).toBe(false);
         const file = await api().get(localPath(open.body.data.preview_url));
         expect(file.status).toBe(200);
@@ -189,6 +192,7 @@ describe('booking-to-delivery workflow', () => {
             .post(`/api/gallery/${galleryId}/orders`)
             .set(bearer(guest.token))
             .set('X-Gallery-Session', gallerySession)
+            .set('X-Event-Phone', phoneProof)
             .send({ type: 'PHOTO_DOWNLOAD', photoIds: [photoIds[0]], couponCode: 'welcome10' });
         expect(order.status, JSON.stringify(order.body)).toBe(201);
         expect(order.body.data.total).toBe(8910);
@@ -207,7 +211,7 @@ describe('booking-to-delivery workflow', () => {
         expect(file.headers['content-disposition']).toMatch(/attachment/);
 
         expect((await api().post(`/api/downloads/${photoIds[1]}`).set(bearer(guest.token))).status).toBe(403);
-        const again = await api().post(`/api/gallery/${galleryId}/orders`).set(bearer(guest.token)).set('X-Gallery-Session', gallerySession).send({ type: 'PHOTO_DOWNLOAD', photoIds: [photoIds[0]] });
+        const again = await api().post(`/api/gallery/${galleryId}/orders`).set(bearer(guest.token)).set('X-Gallery-Session', gallerySession).set('X-Event-Phone', phoneProof).send({ type: 'PHOTO_DOWNLOAD', photoIds: [photoIds[0]] });
         expect(again.status).toBe(409);
     });
 
@@ -224,9 +228,9 @@ describe('booking-to-delivery workflow', () => {
         const qr = await api().post(`/api/galleries/${galleryId}/qr`).set(bearer(admin)).send({ scope: 'ALBUM', albumId: album.body.data.id, maxUses: 1 });
         const token = qr.body.data.url.split('/g/')[1];
         const s = (await api().post('/api/gallery/access').send({ token })).body.data.session;
-        const photos = await api().get(`/api/gallery/${galleryId}/photos`).set('X-Gallery-Session', s);
+        const photos = await api().get(`/api/gallery/${galleryId}/photos`).set('X-Gallery-Session', s).set('X-Event-Phone', phoneProof);
         expect(photos.body.data.items.map((p: { id: number }) => p.id)).toEqual([photoIds[2]]);
-        expect((await api().get(`/api/gallery/${galleryId}/photos/${photoIds[0]}`).set('X-Gallery-Session', s)).status).toBe(404);
+        expect((await api().get(`/api/gallery/${galleryId}/photos/${photoIds[0]}`).set('X-Gallery-Session', s).set('X-Event-Phone', phoneProof)).status).toBe(404);
         expect((await api().post('/api/gallery/access').send({ token })).status).toBe(401);
     });
 

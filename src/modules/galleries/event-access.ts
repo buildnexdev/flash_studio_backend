@@ -27,9 +27,43 @@ export function readEventPhone(token: string | undefined): { eventId: number; ph
     }
 }
 
-export async function requestEventOtp(eventId: number, galleryId: number, phoneRaw: string) {
+async function eventCustomerPhone(eventId: number): Promise<string | null> {
+    const row = await queryOne<{ phone: string | null }>(
+        `SELECT c.phone AS phone
+           FROM tblEvent e
+           JOIN tblCustomer c ON c.id = e.customer_id
+          WHERE e.id = ? AND e.deleted_at IS NULL`,
+        [eventId],
+    );
+    const phone = row?.phone ? digits(row.phone) : '';
+    return /^\d{10}$/.test(phone) ? phone : null;
+}
+
+/** The public event link accepts only the phone saved on that event's customer. */
+export async function assertEventCustomerPhone(eventId: number, phoneRaw: string): Promise<string> {
     const phone = digits(phoneRaw);
     if (!/^\d{10}$/.test(phone)) throw badRequest('Enter a 10-digit phone number.', [{ field: 'phone', message: 'Enter 10 digits' }]);
+    const saved = await eventCustomerPhone(eventId);
+    if (!saved) throw forbidden('This event has no customer phone number yet. Ask the studio to add it.');
+    if (saved !== phone) throw forbidden('Only the customer of this event can open this link.');
+    return phone;
+}
+
+/** Open the event link after the visitor enters the customer's phone. No code is sent. */
+export async function claimEventCustomer(eventId: number, galleryId: number, phoneRaw: string) {
+    const phone = await assertEventCustomerPhone(eventId, phoneRaw);
+    const expires = new Date(Date.now() + ACCESS_HOURS * 3_600_000);
+    await execute('INSERT INTO tblEventAccess (event_id, gallery_id, phone, consent, verified_at, expires_at) VALUES (?, ?, ?, 0, UTC_TIMESTAMP(), ?)', [
+        eventId,
+        galleryId,
+        phone,
+        toSqlDateTime(expires),
+    ]);
+    return { verified: true, phone, proof: signEventPhone(eventId, phone), expiresAt: expires.toISOString() };
+}
+
+export async function requestEventOtp(eventId: number, galleryId: number, phoneRaw: string) {
+    const phone = await assertEventCustomerPhone(eventId, phoneRaw);
     const recent = await queryOne<{ n: number }>('SELECT COUNT(*) AS n FROM tblOtpCode WHERE destination = ? AND purpose = ? AND created_at > DATE_SUB(UTC_TIMESTAMP(), INTERVAL 15 MINUTE)', [phone, 'EVENT_ACCESS']);
     if ((recent?.n ?? 0) >= 5) throw tooMany('Too many codes requested. Please wait a few minutes.');
     const code = numericCode(6);
@@ -49,7 +83,7 @@ export async function requestEventOtp(eventId: number, galleryId: number, phoneR
 }
 
 export async function verifyEventOtp(eventId: number, galleryId: number, phoneRaw: string, code: string, consent: boolean) {
-    const phone = digits(phoneRaw);
+    const phone = await assertEventCustomerPhone(eventId, phoneRaw);
     const row = await queryOne<{ id: number; code_hash: string; attempts: number; expires_at: Date }>(
         "SELECT id, code_hash, attempts, expires_at FROM tblOtpCode WHERE destination = ? AND purpose = 'EVENT_ACCESS' AND consumed_at IS NULL ORDER BY id DESC LIMIT 1",
         [phone],

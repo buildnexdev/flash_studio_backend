@@ -114,6 +114,15 @@ describe('event management workflow', () => {
         const otherGallery = await api().get(`/api/gallery/${galleryId + 99999}`).set('X-Gallery-Session', session);
         expect(otherGallery.status).toBeGreaterThanOrEqual(401);
 
+        const saved = await api().put(`/api/customers/${customer.user.customerId}`).set(bearer(admin)).send({ name: 'QR Customer', phone: '9876501234' });
+        expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+        const rejected = await api().post(`/api/gallery/${galleryId}/phone/claim`).set('X-Gallery-Session', session).send({ phone: '9000000000' });
+        expect(rejected.status).toBe(403);
+        const claimed = await api().post(`/api/gallery/${galleryId}/phone/claim`).set('X-Gallery-Session', session).send({ phone: '9876501234' });
+        expect(claimed.status, JSON.stringify(claimed.body)).toBe(200);
+        const locked = await api().get(`/api/gallery/${galleryId}`).set('X-Gallery-Session', session);
+        expect(locked.status).toBe(403);
+
         const code = await api().post(`/api/gallery/${galleryId}/phone/request`).set('X-Gallery-Session', session).send({ phone: '9876501234' });
         expect(code.status, JSON.stringify(code.body)).toBe(200);
         expect(code.body.data.devCode).toMatch(/^\d{6}$/);
