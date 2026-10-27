@@ -140,6 +140,17 @@ class S3Storage implements StorageDriver {
 }
 
 export const storage: StorageDriver = config.storageDriver === 's3' ? new S3Storage() : new LocalStorage();
+
+/** A missing or broken object store must not fail the whole event response. */
+export async function signedUrlOrNull(key: string | null | undefined, opts?: SignOptions): Promise<string | null> {
+    if (!key) return null;
+    try {
+        return await storage.signedUrl(key, opts);
+    } catch (err) {
+        console.error('[storage] could not sign', key, err instanceof Error ? err.message : err);
+        return null;
+    }
+}
 export const localStorageDriver = storage instanceof LocalStorage ? storage : null;
 
 /** Sign a list of keys at once, preserving nulls. */

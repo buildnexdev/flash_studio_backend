@@ -41,7 +41,7 @@ async function main() {
                 !config.AWS_ACCESS_KEY ? 'AWS_ACCESS_KEY_ID' : '',
                 !config.AWS_SECRET_KEY ? 'AWS_SECRET_ACCESS_KEY' : '',
             ].filter(Boolean);
-            console.warn(`[photolab] storage is local disk. Missing S3 settings: ${missing.join(', ') || 'none'}. Set STORAGE_DRIVER=s3 as well.`);
+            console.warn(`[photolab] storage is local disk. Missing S3 settings: ${missing.join(', ') || 'none'}.`);
         }
     });
 

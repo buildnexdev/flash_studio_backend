@@ -11,7 +11,7 @@ import { likeTerm, offsetOf, orderBy, paged } from '../../utils/pagination.js';
 import { toSqlDateTime } from '../../utils/dates.js';
 import { audit, type AuditContext } from '../audit/audit.service.js';
 import { notifyCustomer, notifyUser } from '../notifications/notifications.service.js';
-import { storage } from '../../lib/storage.js';
+import { signedUrlOrNull, storage } from '../../lib/storage.js';
 import { ensureEventQr, galleryUrl } from '../galleries/galleries.service.js';
 import { decrypt } from '../../utils/crypto.js';
 import { qrDataUrl } from '../../lib/qr.js';
@@ -159,7 +159,7 @@ export async function listEvents(f: EventFilter) {
             }
             return {
                 ...withPaymentStatus(row),
-                cover_url: row.cover_key ? await storage.signedUrl(row.cover_key) : null,
+                cover_url: await signedUrlOrNull(row.cover_key),
                 qr_token,
                 public_url,
             };
@@ -235,7 +235,7 @@ export async function getEvent(id: number) {
     }
     return {
         ...withPaymentStatus(e),
-        cover_url: row.cover_key ? await storage.signedUrl(row.cover_key) : null,
+        cover_url: await signedUrlOrNull(row.cover_key),
         public_url: publicUrl,
         qr_token: qrToken,
         qr_data_url: qrData,

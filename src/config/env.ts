@@ -111,8 +111,8 @@ export const config = {
     ...env,
     isProd: env.NODE_ENV === 'production',
     isTest: env.NODE_ENV === 'test',
-    /** Use S3 whenever the bucket and both keys are set. Local disk is only the fallback. */
-    storageDriver: (env.STORAGE_DRIVER === 's3' || s3Ready ? 's3' : 'local') as 'local' | 's3',
+    /** S3 only when the bucket and both keys exist. STORAGE_DRIVER=s3 without them must not sign URLs. */
+    storageDriver: (s3Ready ? 's3' : 'local') as 'local' | 's3',
     s3Ready,
     corsOrigins: [env.FRONTEND_URL, ...env.CORS_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean)],
     maxUploadBytes: env.MAX_UPLOAD_MB * 1024 * 1024,
