@@ -27,11 +27,13 @@ export interface GalleryRow {
     event_title: string;
     event_status: string;
     event_date: string;
+    event_venue?: string | null;
+    cover_key?: string | null;
 }
 
 export async function loadGallery(id: number): Promise<GalleryRow> {
     const g = await queryOne<GalleryRow>(
-        `SELECT g.*, e.customer_id, e.title AS event_title, e.status AS event_status, e.event_date
+        `SELECT g.*, e.customer_id, e.title AS event_title, e.status AS event_status, e.event_date, e.venue AS event_venue, e.cover_key
            FROM tblGallery g JOIN tblEvent e ON e.id = g.event_id AND e.deleted_at IS NULL
           WHERE g.id = ? AND g.deleted_at IS NULL`,
         [id],
@@ -305,9 +307,9 @@ export async function accessWithToken(rawToken: string, user: AuthUser | undefin
         throw unauthorized('This QR code has reached its scan limit.');
     }
     const g = await loadGallery(t.gallery_id);
-    if (g.status === 'DRAFT' || g.status === 'ARCHIVED') {
+    if (g.status === 'ARCHIVED') {
         await logAccess(t.gallery_id, t.id, userId, 'INVALID', ip, ua);
-        throw forbidden(g.status === 'DRAFT' ? 'This gallery is not open yet. Photos will appear once the event starts.' : 'This gallery has been archived.');
+        throw forbidden('This gallery has been archived.');
     }
     await execute('UPDATE tblGalleryToken SET use_count = use_count + 1, last_used_at = UTC_TIMESTAMP() WHERE id = ?', [t.id]);
     await logAccess(t.gallery_id, t.id, userId, 'GRANTED', ip, ua);

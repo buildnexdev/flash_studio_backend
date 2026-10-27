@@ -18,6 +18,7 @@ import { createOrder } from '../orders/orders.service.js';
 import { listGalleryPhotos, openGalleryPhoto } from '../photos/photos.service.js';
 import * as selections from '../selections/selections.service.js';
 import { getSetting } from '../settings/settings.service.js';
+import { storage } from '../../lib/storage.js';
 import { gallerySession } from './gallery-session.js';
 import { accessWithToken, resolveAccess, scopeFilter } from './galleries.service.js';
 
@@ -78,6 +79,7 @@ router.get(
         ]);
         const pricing = await getSetting('pricing');
         const studio = await getSetting('studio');
+        const coverUrl = a.gallery.cover_key ? await storage.signedUrl(a.gallery.cover_key) : null;
         ok(res, {
             id: a.gallery.id,
             title: a.gallery.title,
@@ -86,6 +88,8 @@ router.get(
             eventId: a.gallery.event_id,
             eventTitle: a.gallery.event_title,
             eventDate: a.gallery.event_date,
+            eventVenue: a.gallery.event_venue ?? null,
+            coverUrl,
             eventStatus: a.gallery.event_status,
             isLive: a.gallery.status === 'LIVE',
             watermark: !!a.gallery.watermark_enabled,
