@@ -52,7 +52,12 @@ export async function assertEventAccess(actor: AuthUser, eventId: number, mode: 
 async function createGallery(conn: Db, eventId: number, title: string, userId: number | null) {
     const days = (await getSetting('gallery')).defaultExpiryDays;
     const expires = toSqlDateTime(new Date(Date.now() + days * 86_400_000));
-    const res = await execute("INSERT INTO tblGallery (event_id, title, status, expires_at, created_by) VALUES (?, ?, 'PUBLISHED', ?, ?)", [eventId, title, expires, userId], conn);
+    // DRAFT until Go live; auto_publish so guest QR shows photos as soon as previews are ready.
+    const res = await execute(
+        "INSERT INTO tblGallery (event_id, title, status, auto_publish, expires_at, created_by) VALUES (?, ?, 'DRAFT', 1, ?, ?)",
+        [eventId, title, expires, userId],
+        conn,
+    );
     return res.insertId;
 }
 
@@ -335,7 +340,22 @@ export async function transitionEvent(id: number, action: EventAction, actor: Au
         const stamp = action === 'start' ? ', started_at = COALESCE(started_at, UTC_TIMESTAMP())' : action === 'stop' ? ', stopped_at = UTC_TIMESTAMP()' : action === 'complete' ? ', completed_at = UTC_TIMESTAMP()' : '';
         await execute(`UPDATE tblEvent SET status = ?${stamp} WHERE id = ?`, [t.to, id], conn);
         if (action === 'start') {
-            await execute("UPDATE tblGallery SET status = 'LIVE' WHERE event_id = ? AND status = 'DRAFT'", [id], conn);
+            // Galleries used to be created as PUBLISHED, so "DRAFT only" never flipped them to LIVE.
+            await execute(
+                "UPDATE tblGallery SET status = 'LIVE', auto_publish = 1 WHERE event_id = ? AND deleted_at IS NULL AND status IN ('DRAFT','PUBLISHED','LIVE')",
+                [id],
+                conn,
+            );
+            // Any preview already processed must appear on the guest QR immediately.
+            await execute(
+                `UPDATE tblPhoto p
+                    JOIN tblGallery g ON g.id = p.gallery_id
+                    SET p.is_published = 1
+                  WHERE g.event_id = ? AND g.deleted_at IS NULL
+                    AND p.deleted_at IS NULL AND p.is_rejected = 0 AND p.preview_key IS NOT NULL`,
+                [id],
+                conn,
+            );
             if (e.booking_id) await execute("UPDATE tblBooking SET status = 'IN_PROGRESS' WHERE id = ? AND status = 'CONFIRMED'", [e.booking_id], conn);
             await execute("UPDATE tblEventStaff SET task_status = 'IN_PROGRESS' WHERE event_id = ? AND task_status IN ('ASSIGNED','ACCEPTED')", [id], conn);
         }
