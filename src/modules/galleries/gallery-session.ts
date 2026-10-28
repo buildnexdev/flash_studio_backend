@@ -16,6 +16,8 @@ export interface GallerySession {
     sessionId: string;
     /** Set after the visitor enters the event customer's phone on a /g/ link. */
     customerPhone?: string;
+    /** Scanned event QR opens without phone; plain /g/ link still requires it. */
+    openAsQr?: boolean;
 }
 
 const SECRET = () => `${config.JWT_SECRET}:gallery`;
@@ -38,6 +40,7 @@ export function verifyGallerySession(token: string): GallerySession | null {
             photoId: p.photoId,
             sessionId: p.sessionId,
             ...(phone && phone.length === 10 ? { customerPhone: phone } : {}),
+            ...(p.openAsQr ? { openAsQr: true } : {}),
         };
     } catch {
         return null;

@@ -39,10 +39,12 @@ const access = async (req: Request) => {
               ? sessionPhone
               : null;
     let phoneVerified = !!claimPhone;
-    // Public /g/ links always carry a gallery session. Those must match the event customer phone,
-    // even if a studio staff account is signed in in the same browser.
     const guestLink = !!req.gallery;
-    if (guestLink || (!a.isOwner && !a.isStaff)) {
+    const qrOpen = !!req.gallery?.openAsQr;
+    // Scanned QR (?src=qr) is open to anyone. The plain /g/ link still needs the customer phone.
+    if (qrOpen) {
+        phoneVerified = true;
+    } else if (guestLink || (!a.isOwner && !a.isStaff)) {
         if (!claimPhone) {
             throw forbidden('Enter the phone number for this event.', [], 'PHONE_REQUIRED');
         }
@@ -62,9 +64,14 @@ router.post(
     '/access',
     galleryAccessLimiter,
     optionalAuth,
-    validate(z.object({ token: z.string().trim().min(16).max(128).regex(/^[A-Za-z0-9_-]+$/, 'Invalid QR code') })),
+    validate(
+        z.object({
+            token: z.string().trim().min(16).max(128).regex(/^[A-Za-z0-9_-]+$/, 'Invalid QR code'),
+            openMode: z.enum(['qr', 'link']).optional().default('link'),
+        }),
+    ),
     asyncHandler(async (req, res) => {
-        ok(res, await accessWithToken(req.body.token, req.user, clientIp(req), userAgent(req)), 'Gallery unlocked');
+        ok(res, await accessWithToken(req.body.token, req.user, clientIp(req), userAgent(req), req.body.openMode ?? 'link'), 'Gallery unlocked');
     }),
 );
 

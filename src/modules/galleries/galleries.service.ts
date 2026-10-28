@@ -43,7 +43,11 @@ export async function loadGallery(id: number): Promise<GalleryRow> {
     return g;
 }
 
-export const galleryUrl = (rawToken: string) => `${config.FRONTEND_URL}/g/${rawToken}`;
+/** Printed/scanned QR URL. `src=qr` skips the phone gate; the plain /g/ link still asks for phone. */
+export const galleryUrl = (rawToken: string) => `${config.FRONTEND_URL}/g/${rawToken}?src=qr`;
+
+/** Shareable customer link (phone required). */
+export const galleryLinkUrl = (rawToken: string) => `${config.FRONTEND_URL}/g/${rawToken}`;
 
 /* ---------------- Admin ---------------- */
 
@@ -288,7 +292,13 @@ async function logAccess(galleryId: number, tokenId: number | null, userId: numb
 }
 
 /** Exchange a QR token for a short-lived gallery session. */
-export async function accessWithToken(rawToken: string, user: AuthUser | undefined, ip: string, ua: string) {
+export async function accessWithToken(
+    rawToken: string,
+    user: AuthUser | undefined,
+    ip: string,
+    ua: string,
+    openMode: 'qr' | 'link' = 'link',
+) {
     const t = await queryOne<{ id: number; gallery_id: number; scope: GallerySession['scope']; album_id: number | null; photo_id: number | null; expires_at: Date | null; revoked_at: Date | null; max_uses: number | null; use_count: number }>(
         'SELECT id, gallery_id, scope, album_id, photo_id, expires_at, revoked_at, max_uses, use_count FROM tblGalleryToken WHERE token_hash = ?',
         [sha256(rawToken)],
@@ -314,7 +324,15 @@ export async function accessWithToken(rawToken: string, user: AuthUser | undefin
     }
     await execute('UPDATE tblGalleryToken SET use_count = use_count + 1, last_used_at = UTC_TIMESTAMP() WHERE id = ?', [t.id]);
     await logAccess(t.gallery_id, t.id, userId, 'GRANTED', ip, ua);
-    const session: GallerySession = { galleryId: t.gallery_id, tokenId: t.id, scope: t.scope, albumId: t.album_id, photoId: t.photo_id, sessionId: uuid() };
+    const session: GallerySession = {
+        galleryId: t.gallery_id,
+        tokenId: t.id,
+        scope: t.scope,
+        albumId: t.album_id,
+        photoId: t.photo_id,
+        sessionId: uuid(),
+        ...(openMode === 'qr' ? { openAsQr: true } : {}),
+    };
     const photo = await queryOne<{ thumb_key: string | null; preview_key: string | null }>(
         `SELECT thumb_key, preview_key FROM tblPhoto
           WHERE gallery_id = ? AND deleted_at IS NULL AND is_rejected = 0 AND is_published = 1
@@ -331,6 +349,7 @@ export async function accessWithToken(rawToken: string, user: AuthUser | undefin
         scope: t.scope,
         title: g.title,
         coverUrl,
+        openAsQr: openMode === 'qr',
     };
 }
 

@@ -101,13 +101,13 @@ describe('event management workflow', () => {
         const soon = new Date(Date.now() + 2500).toISOString().slice(0, 19).replace('T', ' ');
         const qr = await api().post(`/api/galleries/${galleryId}/qr`).set(bearer(admin)).send({ scope: 'EVENT', label: 'Short link', expiresAt: soon });
         expect(qr.status, JSON.stringify(qr.body)).toBe(201);
-        const token = qr.body.data.url.split('/g/')[1];
+        const token = String(qr.body.data.url).split('/g/')[1].split(/[?#]/)[0];
         await new Promise((resolve) => setTimeout(resolve, 4000));
         const expired = await api().post('/api/gallery/access').send({ token });
         expect(expired.status).toBe(401);
 
         const live = await api().post(`/api/galleries/${galleryId}/qr`).set(bearer(admin)).send({ scope: 'EVENT', label: 'Guest link' });
-        const liveToken = live.body.data.url.split('/g/')[1];
+        const liveToken = String(live.body.data.url).split('/g/')[1].split(/[?#]/)[0];
         const access = await api().post('/api/gallery/access').send({ token: liveToken });
         expect(access.status).toBe(200);
         const session = access.body.data.session;
