@@ -14,6 +14,7 @@ import { forbidden } from '../../utils/errors.js';
 import { pageQuery } from '../../utils/pagination.js';
 import { hhmm, idParam, optionalText, ymd } from '../../utils/schemas.js';
 import { auditCtx } from '../audit/audit.service.js';
+import { prepareEventGallery } from '../photos/photos.service.js';
 import * as events from './events.service.js';
 
 const eventBody = z.object({
@@ -152,10 +153,28 @@ for (const action of Object.keys(ACTION_MESSAGES) as events.EventAction[]) {
         `/:id/${action}`,
         validate(idParam, 'params'),
         asyncHandler(async (req, res) => {
-            ok(res, await events.transitionEvent(Number(req.params.id), action, req.user!, auditCtx(req)), ACTION_MESSAGES[action]);
+            const id = Number(req.params.id);
+            const event = await events.transitionEvent(id, action, req.user!, auditCtx(req));
+            if (action === 'start') await prepareEventGallery(id);
+            ok(res, event, ACTION_MESSAGES[action]);
         }),
     );
 }
+
+/*
+ * Publish ready previews and re-queue unfinished uploads for the guest QR.
+*/
+router.post(
+    '/:id/sync-photos',
+    requirePermission('events.manage', 'photos.manage'),
+    validate(idParam, 'params'),
+    asyncHandler(async (req, res) => {
+        const id = Number(req.params.id);
+        await events.assertEventAccess(req.user!, id, 'work');
+        const queued = await prepareEventGallery(id);
+        ok(res, { queued }, queued ? `Re-queued ${queued} photo(s) for the guest gallery` : 'Guest gallery photos are up to date');
+    }),
+);
 
 /*
  * UPLOAD A COVER IMAGE FOR THE EVENT

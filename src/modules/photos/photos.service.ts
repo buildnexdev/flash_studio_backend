@@ -60,7 +60,14 @@ async function processPhoto(photoId: number): Promise<void> {
         await storage.put(thumbKey, variants.thumb, 'image/jpeg');
 
         const old = await queryOne<{ preview_key: string | null; thumb_key: string | null }>('SELECT preview_key, thumb_key FROM tblPhoto WHERE id = ?', [photoId]);
-        const publish = isFirstPass ? (g?.auto_publish ? 1 : 0) : p.is_published;
+        // Live / published event galleries always show new photos on the guest QR.
+        const publish = isFirstPass
+            ? g?.status === 'LIVE' || g?.status === 'PUBLISHED' || Number(g?.auto_publish ?? 1) === 1
+                ? 1
+                : 0
+            : Number(p.is_published) === 1
+              ? 1
+              : 0;
         await execute(`UPDATE tblPhoto SET preview_key = ?, thumb_key = ?, is_published = ?${isFirstPass ? ", status = 'PREVIEW'" : ''}, processing_error = NULL WHERE id = ?`, [previewKey, thumbKey, publish, photoId]);
         for (const k of [old?.preview_key, old?.thumb_key]) if (k) await storage.delete(k).catch(() => undefined);
 
@@ -100,6 +107,26 @@ export const photoQueue = new JobQueue<number>('photos', processPhoto, config.UP
 /** Re-queue photos left unprocessed by a restart. */
 export async function recoverPendingPhotos(): Promise<number> {
     const rows = await query<{ id: number }>("SELECT id FROM tblPhoto WHERE deleted_at IS NULL AND (status IN ('UPLOADED','PROCESSING') OR preview_key IS NULL) ORDER BY id LIMIT 5000");
+    rows.forEach((r) => photoQueue.enqueue(r.id));
+    return rows.length;
+}
+
+/** After Go live: publish ready previews and re-queue anything still missing a guest preview. */
+export async function prepareEventGallery(eventId: number): Promise<number> {
+    await execute(
+        `UPDATE tblPhoto p
+            JOIN tblGallery g ON g.id = p.gallery_id
+            SET p.is_published = 1
+          WHERE g.event_id = ? AND g.deleted_at IS NULL
+            AND p.deleted_at IS NULL AND p.is_rejected = 0 AND p.preview_key IS NOT NULL`,
+        [eventId],
+    );
+    const rows = await query<{ id: number }>(
+        `SELECT p.id FROM tblPhoto p
+           JOIN tblGallery g ON g.id = p.gallery_id
+          WHERE g.event_id = ? AND p.deleted_at IS NULL AND (p.preview_key IS NULL OR p.status IN ('UPLOADED','PROCESSING'))`,
+        [eventId],
+    );
     rows.forEach((r) => photoQueue.enqueue(r.id));
     return rows.length;
 }
@@ -179,6 +206,16 @@ export async function uploadPhotos(files: Express.Multer.File[], meta: UploadMet
     if (okCount) {
         await audit(ctx, 'PHOTO_UPLOAD', 'photos', meta.eventId, { count: okCount, camera: meta.cameraLabel ?? null });
         emitTo(rooms.event(meta.eventId), 'photo:uploaded', { eventId: meta.eventId, count: okCount, by: actor.name });
+        if (['LIVE', 'UPLOADING', 'PROCESSING', 'COMPLETED'].includes(event.status)) {
+            await execute(
+                `UPDATE tblPhoto p
+                    JOIN tblGallery g ON g.id = p.gallery_id
+                    SET p.is_published = 1
+                  WHERE g.event_id = ? AND g.deleted_at IS NULL
+                    AND p.deleted_at IS NULL AND p.is_rejected = 0 AND p.preview_key IS NOT NULL AND p.is_published = 0`,
+                [meta.eventId],
+            );
+        }
     }
     return results;
 }
