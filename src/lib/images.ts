@@ -72,51 +72,88 @@ export async function inspectImage(input: Buffer): Promise<ImageInfo> {
 
 const escapeXml = (s: string) => s.replace(/[<>&"']/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' })[c]!);
 
+export interface WatermarkBrand {
+    /** Company / studio name shown on the mark. */
+    name: string;
+    /** Studio phone under the name (optional). */
+    phone?: string | null;
+}
+
+function watermarkMetrics(width: number, height: number, hasPhone: boolean) {
+    const nameSize = Math.max(16, Math.min(48, Math.round(width * 0.038)));
+    const phoneSize = Math.max(12, Math.min(28, Math.round(width * 0.026)));
+    const bottomPad = Math.max(14, Math.round(height * 0.03));
+    const lineGap = Math.round(nameSize * 1.15);
+    const textBlock = hasPhone ? nameSize + lineGap : nameSize;
+    return { nameSize, phoneSize, bottomPad, lineGap, textBlock };
+}
+
 /**
- * Single bottom-centre brand mark (like studio event photos).
- * No diagonal repeat — one watermark in one place at the bottom.
+ * Bottom-centre brand: company name + phone (logo composited separately above).
  */
-function watermarkSvg(width: number, height: number, text: string): Buffer {
-    const label = escapeXml(text.trim() || 'STUDIO');
-    const fontSize = Math.max(18, Math.min(56, Math.round(width * 0.045)));
-    const bottomPad = Math.max(16, Math.round(height * 0.035));
-    const y = height - bottomPad;
-    return Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
+function watermarkSvg(width: number, height: number, brand: WatermarkBrand): Buffer {
+    const name = escapeXml((brand.name || 'STUDIO').trim() || 'STUDIO');
+    const phoneRaw = (brand.phone || '').trim();
+    const phone = phoneRaw ? escapeXml(phoneRaw) : '';
+    const { nameSize, phoneSize, bottomPad, lineGap } = watermarkMetrics(width, height, !!phone);
+    const phoneY = height - bottomPad;
+    const nameY = phone ? phoneY - lineGap : phoneY;
+    const dual = (y: number, size: number, label: string) => `
   <text x="50%" y="${y}" text-anchor="middle" dominant-baseline="alphabetic"
-        font-family="Georgia, 'Times New Roman', Times, serif" font-size="${fontSize}" font-weight="700"
+        font-family="Georgia, 'Times New Roman', Times, serif" font-size="${size}" font-weight="700"
         fill="#000000" fill-opacity="0.35">${label}</text>
   <text x="50%" y="${y - 1}" text-anchor="middle" dominant-baseline="alphabetic"
-        font-family="Georgia, 'Times New Roman', Times, serif" font-size="${fontSize}" font-weight="700"
-        fill="#ffffff" fill-opacity="0.88">${label}</text>
+        font-family="Georgia, 'Times New Roman', Times, serif" font-size="${size}" font-weight="700"
+        fill="#ffffff" fill-opacity="0.9">${label}</text>`;
+    return Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
+${dual(nameY, nameSize, name)}
+${phone ? dual(phoneY, phoneSize, phone) : ''}
 </svg>`);
 }
 
-/** Studio logo sits bottom-centre above the text mark when both are enabled. */
-async function prepareLogo(width: number, height: number, logo: Buffer): Promise<{ input: Buffer; left: number; top: number }> {
-    const maxW = Math.max(64, Math.round(width * 0.16));
+/** Studio logo sits bottom-centre above the name / phone lines. */
+async function prepareLogo(
+    width: number,
+    height: number,
+    logo: Buffer,
+    textBlock: number,
+): Promise<{ input: Buffer; left: number; top: number }> {
+    const maxW = Math.max(56, Math.round(width * 0.14));
     const resized = await sharp(logo)
         .resize({ width: maxW, height: Math.round(maxW * 0.75), fit: 'inside', withoutEnlargement: true })
         .ensureAlpha()
         .raw()
         .toBuffer({ resolveWithObject: true });
     const data = Buffer.from(resized.data);
-    for (let i = 3; i < data.length; i += 4) data[i] = Math.round(data[i] * 0.75);
+    for (let i = 3; i < data.length; i += 4) data[i] = Math.round(data[i] * 0.8);
     const input = await sharp(data, { raw: { width: resized.info.width, height: resized.info.height, channels: 4 } }).png().toBuffer();
-    const bottomPad = Math.max(16, Math.round(height * 0.035));
-    const textRoom = Math.max(22, Math.round(width * 0.05));
+    const bottomPad = Math.max(14, Math.round(height * 0.03));
+    const gap = Math.max(6, Math.round(height * 0.01));
     return {
         input,
         left: Math.max(0, Math.round((width - resized.info.width) / 2)),
-        top: Math.max(0, height - bottomPad - textRoom - resized.info.height),
+        top: Math.max(0, height - bottomPad - textBlock - gap - resized.info.height),
     };
 }
 
-async function renderVariant(input: Buffer, size: number, watermark: string | null, logo: Buffer | null, quality: number): Promise<Buffer> {
+async function renderVariant(
+    input: Buffer,
+    size: number,
+    brand: WatermarkBrand | null,
+    logo: Buffer | null,
+    quality: number,
+): Promise<Buffer> {
     const resized = await sharp(input).rotate().resize({ width: size, height: size, fit: 'inside', withoutEnlargement: true }).toBuffer({ resolveWithObject: true });
     let pipeline = sharp(resized.data);
     const layers: { input: Buffer; top?: number; left?: number }[] = [];
-    if (watermark) layers.push({ input: watermarkSvg(resized.info.width, resized.info.height, watermark), top: 0, left: 0 });
-    if (logo) layers.push(await prepareLogo(resized.info.width, resized.info.height, logo));
+    if (brand) {
+        const hasPhone = !!(brand.phone || '').trim();
+        const { textBlock } = watermarkMetrics(resized.info.width, resized.info.height, hasPhone);
+        layers.push({ input: watermarkSvg(resized.info.width, resized.info.height, brand), top: 0, left: 0 });
+        if (logo) layers.push(await prepareLogo(resized.info.width, resized.info.height, logo, textBlock));
+    } else if (logo) {
+        layers.push(await prepareLogo(resized.info.width, resized.info.height, logo, 0));
+    }
     if (layers.length) pipeline = pipeline.composite(layers);
     // Previews never carry EXIF/GPS data (sharp strips metadata unless withMetadata() is called)
     return pipeline.jpeg({ quality, mozjpeg: true, progressive: true }).toBuffer();
@@ -129,12 +166,21 @@ export interface Variants {
 
 export async function makeVariants(
     input: Buffer,
-    opts: { watermark: string | null; watermarkLogo?: Buffer | null; previewSize: number; thumbSize: number },
+    opts: {
+        watermark: string | null;
+        watermarkPhone?: string | null;
+        watermarkLogo?: Buffer | null;
+        previewSize: number;
+        thumbSize: number;
+    },
 ): Promise<Variants> {
     const logo = opts.watermarkLogo ?? null;
+    const brand: WatermarkBrand | null = opts.watermark
+        ? { name: opts.watermark, phone: opts.watermarkPhone ?? null }
+        : null;
     const [preview, thumb] = await Promise.all([
-        renderVariant(input, opts.previewSize, opts.watermark, logo, 78),
-        renderVariant(input, opts.thumbSize, opts.watermark, logo, 72),
+        renderVariant(input, opts.previewSize, brand, logo, 78),
+        renderVariant(input, opts.thumbSize, brand, logo, 72),
     ]);
     return { preview, thumb };
 }

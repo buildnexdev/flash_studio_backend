@@ -37,18 +37,21 @@ async function processPhoto(photoId: number): Promise<void> {
     );
     if (!p) return;
     const g = await queryOne<{ watermark_enabled: number; auto_publish: number; status: string }>('SELECT watermark_enabled, auto_publish, status FROM tblGallery WHERE id = ?', [p.gallery_id]);
-    const gs = await getSetting('gallery');
+    const [gs, studio] = await Promise.all([getSetting('gallery'), getSetting('studio')]);
     const isFirstPass = p.status === 'UPLOADED' || p.status === 'PROCESSING';
     if (isFirstPass) await execute("UPDATE tblPhoto SET status = 'PROCESSING', processing_error = NULL WHERE id = ?", [photoId]);
 
     try {
         const source = await storage.get(p.edited_key ?? p.original_key);
+        // Guest previews: company logo (if uploaded) + watermark name + studio phone.
         let watermarkLogo: Buffer | null = null;
-        if (g?.watermark_enabled && gs.watermarkUseLogo && gs.watermarkLogoKey) {
+        if (g?.watermark_enabled && gs.watermarkLogoKey) {
             watermarkLogo = await storage.get(gs.watermarkLogoKey).catch(() => null);
         }
+        const studioPhone = (studio.phone || studio.whatsapp || '').trim() || null;
         const variants = await makeVariants(source, {
-            watermark: g?.watermark_enabled ? gs.watermarkText : null,
+            watermark: g?.watermark_enabled ? gs.watermarkText || studio.name : null,
+            watermarkPhone: g?.watermark_enabled ? studioPhone : null,
             watermarkLogo,
             previewSize: gs.previewSize,
             thumbSize: gs.thumbSize,
