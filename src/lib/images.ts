@@ -72,43 +72,42 @@ export async function inspectImage(input: Buffer): Promise<ImageInfo> {
 
 const escapeXml = (s: string) => s.replace(/[<>&"']/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' })[c]!);
 
-/** Diagonal repeating watermark tile plus a centred label, rendered as SVG and composited by sharp. */
+/**
+ * Single bottom-centre brand mark (like studio event photos).
+ * No diagonal repeat — one watermark in one place at the bottom.
+ */
 function watermarkSvg(width: number, height: number, text: string): Buffer {
-    const label = escapeXml(text);
-    const tileW = Math.max(260, Math.round(width / 3.2));
-    const tileH = Math.round(tileW * 0.55);
-    const fontSize = Math.max(16, Math.round(tileW / 11));
-    const bigSize = Math.max(28, Math.round(width / 16));
+    const label = escapeXml(text.trim() || 'STUDIO');
+    const fontSize = Math.max(18, Math.min(56, Math.round(width * 0.045)));
+    const bottomPad = Math.max(16, Math.round(height * 0.035));
+    const y = height - bottomPad;
     return Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
-  <defs>
-    <pattern id="wm" width="${tileW}" height="${tileH}" patternUnits="userSpaceOnUse" patternTransform="rotate(-30)">
-      <text x="0" y="${Math.round(tileH / 2)}" font-family="Arial, Helvetica, sans-serif" font-size="${fontSize}" font-weight="700"
-            fill="#ffffff" fill-opacity="0.32" stroke="#000000" stroke-opacity="0.18" stroke-width="1">${label}</text>
-    </pattern>
-  </defs>
-  <rect width="100%" height="100%" fill="url(#wm)"/>
-  <text x="50%" y="50%" text-anchor="middle" dominant-baseline="middle" font-family="Arial, Helvetica, sans-serif"
-        font-size="${bigSize}" font-weight="800" fill="#ffffff" fill-opacity="0.45" stroke="#000000" stroke-opacity="0.25" stroke-width="2">${label}</text>
-  <text x="50%" y="${height - Math.round(bigSize * 0.6)}" text-anchor="middle" font-family="Arial, Helvetica, sans-serif"
-        font-size="${Math.round(bigSize / 2.4)}" fill="#ffffff" fill-opacity="0.7">PREVIEW - purchase to download HD</text>
+  <text x="50%" y="${y}" text-anchor="middle" dominant-baseline="alphabetic"
+        font-family="Georgia, 'Times New Roman', Times, serif" font-size="${fontSize}" font-weight="700"
+        fill="#000000" fill-opacity="0.35">${label}</text>
+  <text x="50%" y="${y - 1}" text-anchor="middle" dominant-baseline="alphabetic"
+        font-family="Georgia, 'Times New Roman', Times, serif" font-size="${fontSize}" font-weight="700"
+        fill="#ffffff" fill-opacity="0.88">${label}</text>
 </svg>`);
 }
 
+/** Studio logo sits bottom-centre above the text mark when both are enabled. */
 async function prepareLogo(width: number, height: number, logo: Buffer): Promise<{ input: Buffer; left: number; top: number }> {
-    const maxW = Math.max(72, Math.round(width * 0.2));
+    const maxW = Math.max(64, Math.round(width * 0.16));
     const resized = await sharp(logo)
         .resize({ width: maxW, height: Math.round(maxW * 0.75), fit: 'inside', withoutEnlargement: true })
         .ensureAlpha()
         .raw()
         .toBuffer({ resolveWithObject: true });
     const data = Buffer.from(resized.data);
-    for (let i = 3; i < data.length; i += 4) data[i] = Math.round(data[i] * 0.62);
+    for (let i = 3; i < data.length; i += 4) data[i] = Math.round(data[i] * 0.75);
     const input = await sharp(data, { raw: { width: resized.info.width, height: resized.info.height, channels: 4 } }).png().toBuffer();
-    const pad = Math.max(10, Math.round(width * 0.028));
+    const bottomPad = Math.max(16, Math.round(height * 0.035));
+    const textRoom = Math.max(22, Math.round(width * 0.05));
     return {
         input,
-        left: Math.max(0, width - resized.info.width - pad),
-        top: Math.max(0, height - resized.info.height - pad),
+        left: Math.max(0, Math.round((width - resized.info.width) / 2)),
+        top: Math.max(0, height - bottomPad - textRoom - resized.info.height),
     };
 }
 
