@@ -3,7 +3,7 @@
 // Last Edited : 06-10-2026
 import { Router, type Request } from 'express';
 import { z } from 'zod';
-import { query } from '../../db/pool.js';
+import { query, queryOne } from '../../db/pool.js';
 import { imageUpload } from '../../lib/upload.js';
 import { optionalAuth } from '../../middleware/auth.js';
 import { galleryAccessLimiter, otpLimiter } from '../../middleware/rate-limit.js';
@@ -96,7 +96,18 @@ router.get(
         ]);
         const pricing = await getSetting('pricing');
         const studio = await getSetting('studio');
-        const coverUrl = a.gallery.cover_key ? await storage.signedUrl(a.gallery.cover_key) : null;
+        let coverKey = a.gallery.cover_key ?? null;
+        if (!coverKey) {
+            const coverPhoto = await queryOne<{ thumb_key: string | null; preview_key: string | null }>(
+                `SELECT thumb_key, preview_key FROM tblPhoto
+                  WHERE gallery_id = ? AND deleted_at IS NULL AND is_rejected = 0 AND is_published = 1
+                    AND (thumb_key IS NOT NULL OR preview_key IS NOT NULL)
+                  ORDER BY (id = ?) DESC, id LIMIT 1`,
+                [a.gallery.id, a.gallery.cover_photo_id ?? 0],
+            );
+            coverKey = coverPhoto?.preview_key ?? coverPhoto?.thumb_key ?? null;
+        }
+        const coverUrl = coverKey ? await storage.signedUrl(coverKey) : null;
         ok(res, {
             id: a.gallery.id,
             title: a.gallery.title,

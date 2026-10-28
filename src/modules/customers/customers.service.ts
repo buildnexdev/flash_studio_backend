@@ -1,7 +1,9 @@
 // Developer by: Buildnexdev.in
 // Devevloper : Nandhakumar@gmail.com
 // Last Edited : 06-10-2026 
+import { randomUUID } from 'node:crypto';
 import { execute, primaryCompanyId, query, queryOne, type Db, type Row, pool, withTransaction } from '../../db/pool.js';
+import { storage } from '../../lib/storage.js';
 import { conflict, notFound } from '../../utils/errors.js';
 import { likeTerm, offsetOf, orderBy, paged, type PageQuery } from '../../utils/pagination.js';
 import { audit, type AuditContext } from '../audit/audit.service.js';
@@ -42,7 +44,7 @@ export async function listCustomers(q: PageQuery) {
     return paged(items, total, q);
 }
 
-export async function getCustomer(id: number): Promise<Row & { bookings: Row[]; events: Row[]; orders: Row[]; payments: Row[] }> {
+export async function getCustomer(id: number): Promise<Row & { bookings: Row[]; events: Row[]; orders: Row[]; payments: Row[]; photo_url: string | null }> {
     const c = await queryOne('SELECT * FROM tblCustomer WHERE id = ? AND deleted_at IS NULL', [id]);
     if (!c) throw notFound('Customer');
     const [bookings, events, orders, payments] = await Promise.all([
@@ -51,12 +53,40 @@ export async function getCustomer(id: number): Promise<Row & { bookings: Row[]; 
         query('SELECT id, order_no, type, status, total, created_at FROM tblOrder WHERE customer_id = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT 50', [id]),
         query('SELECT id, payment_no, purpose, amount, status, method, paid_at, created_at FROM tblPayment WHERE customer_id = ? ORDER BY id DESC LIMIT 50', [id]),
     ]);
-    return { ...c, bookings, events, orders, payments } as Row & {
+    const photoKey = c.photo_key ? String(c.photo_key) : null;
+    const photo_url = photoKey ? await storage.signedUrl(photoKey) : null;
+    const { photo_key: _pk, ...rest } = c;
+    void _pk;
+    return { ...rest, photo_url, bookings, events, orders, payments } as Row & {
         bookings: Row[];
         events: Row[];
         orders: Row[];
         payments: Row[];
+        photo_url: string | null;
     };
+}
+
+export async function setCustomerPhoto(id: number, file: { buffer: Buffer; originalname: string; mimetype: string; size: number }, ctx: AuditContext) {
+    const c = await queryOne<{ id: number; photo_key: string | null }>('SELECT id, photo_key FROM tblCustomer WHERE id = ? AND deleted_at IS NULL', [id]);
+    if (!c) throw notFound('Customer');
+    const ext = (/\.(jpe?g|png|webp)$/i.exec(file.originalname)?.[1] ?? 'jpg').toLowerCase();
+    const key = `customers/${id}/${randomUUID()}.${ext}`;
+    await storage.put(key, file.buffer, file.mimetype);
+    if (c.photo_key) await storage.delete(String(c.photo_key)).catch(() => undefined);
+    await execute('UPDATE tblCustomer SET photo_key = ? WHERE id = ?', [key, id]);
+    await audit(ctx, 'CUSTOMER_UPDATED', 'customers', id, { photo: true });
+    return getCustomer(id);
+}
+
+export async function removeCustomerPhoto(id: number, ctx: AuditContext) {
+    const c = await queryOne<{ photo_key: string | null }>('SELECT photo_key FROM tblCustomer WHERE id = ? AND deleted_at IS NULL', [id]);
+    if (!c) throw notFound('Customer');
+    if (c.photo_key) {
+        await storage.delete(String(c.photo_key)).catch(() => undefined);
+        await execute('UPDATE tblCustomer SET photo_key = NULL WHERE id = ?', [id]);
+        await audit(ctx, 'CUSTOMER_UPDATED', 'customers', id, { photoRemoved: true });
+    }
+    return getCustomer(id);
 }
 
 /** Find a customer by email/phone or create one (used by public enquiries and admin bookings). */

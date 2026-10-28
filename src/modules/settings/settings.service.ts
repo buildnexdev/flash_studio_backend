@@ -32,6 +32,8 @@ export const settingSchemas = {
     }),
     gallery: z.object({
         watermarkText: z.string().trim().min(1).max(60),
+        watermarkUseLogo: z.boolean().default(false),
+        watermarkLogoKey: z.string().trim().max(250).nullable().optional().default(null),
         defaultExpiryDays: z.number().int().min(1).max(3650),
         previewSize: z.number().int().min(600).max(3000),
         thumbSize: z.number().int().min(200).max(1000),
@@ -135,7 +137,15 @@ export const DEFAULT_SETTINGS: Settings = {
         album: 1499900,
         courierFee: 15000,
     },
-    gallery: { watermarkText: 'BuildNexDev Studio', defaultExpiryDays: 90, previewSize: 1600, thumbSize: 480, requirePhoneVerification: false },
+    gallery: {
+        watermarkText: 'BuildNexDev Studio',
+        watermarkUseLogo: false,
+        watermarkLogoKey: null,
+        defaultExpiryDays: 90,
+        previewSize: 1600,
+        thumbSize: 480,
+        requirePhoneVerification: false,
+    },
     notifications: { email: true, whatsapp: false, sms: false },
     ai: { faceSearch: false, culling: true, blurThreshold: 60 },
     website: {

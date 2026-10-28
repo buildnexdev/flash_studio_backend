@@ -185,9 +185,10 @@ export async function getEvent(id: number) {
         [id],
     );
     if (!e) throw notFound('Event');
-    const [staff, gallery, photoStats, revenue, access] = await Promise.all([
+    const [staff, gallery, photoStats, revenue, access, eventAssets] = await Promise.all([
         query(
-            `SELECT es.id, es.user_id, u.name, u.email, u.phone, es.role, es.camera_label, es.task_status, es.created_at
+            `SELECT es.id, es.user_id, u.name, u.email, u.phone, es.role, es.camera_label, es.task_status, es.created_at,
+                    es.pay_basis, es.share_pct, es.commission_pct, es.day_rate_override, es.flat_amount, es.payout_status
                FROM tblEventStaff es JOIN tblUser u ON u.id = es.user_id WHERE es.event_id = ? ORDER BY es.role, u.name`,
             [id],
         ),
@@ -205,6 +206,17 @@ export async function getEvent(id: number) {
                 (SELECT COUNT(*) FROM tblPhotoView v WHERE v.event_id = ?) AS photo_views,
                 (SELECT COUNT(*) FROM tblDownload d WHERE d.event_id = ?) AS downloads`,
             [id, id, id],
+        ),
+        query(
+            `SELECT aa.id AS assignment_id, a.id, a.asset_code, a.name, a.category, a.status, a.asset_condition,
+                    aa.assigned_at, aa.notes, u.name AS staff_name
+               FROM tblAssetAssignment aa
+               JOIN tblAsset a ON a.id = aa.asset_id
+               LEFT JOIN tblStaff s ON s.id = aa.staff_id
+               LEFT JOIN tblUser u ON u.id = s.user_id
+              WHERE aa.event_id = ? AND aa.returned_at IS NULL
+              ORDER BY aa.id DESC`,
+            [id],
         ),
     ]);
     const row = e as { cover_key?: string | null };
@@ -240,6 +252,7 @@ export async function getEvent(id: number) {
         qr_token: qrToken,
         qr_data_url: qrData,
         staff,
+        assets: eventAssets,
         gallery,
         photos: Object.fromEntries(photoStats.map((r) => [r.status, r.n])),
         photo_total: photoStats.reduce((s, r) => s + Number(r.n), 0),
@@ -347,7 +360,20 @@ export async function transitionEvent(id: number, action: EventAction, actor: Au
     return getEvent(id);
 }
 
-export async function assignStaff(eventId: number, input: { userId: number; role: string; cameraLabel?: string | null }, ctx: AuditContext) {
+export async function assignStaff(
+    eventId: number,
+    input: {
+        userId: number;
+        role: string;
+        cameraLabel?: string | null;
+        payBasis?: 'DAY_RATE' | 'SHARE' | 'COMMISSION' | 'FLAT' | 'NONE';
+        sharePct?: number | null;
+        commissionPct?: number | null;
+        dayRateOverride?: number | null;
+        flatAmount?: number | null;
+    },
+    ctx: AuditContext,
+) {
     const e = await queryOne<{ title: string; event_date: string; status: EventStatus }>('SELECT title, event_date, status FROM tblEvent WHERE id = ? AND deleted_at IS NULL', [eventId]);
     if (!e) throw notFound('Event');
     if (e.status === 'CANCELLED') throw conflict('Cannot assign staff to a cancelled event.');
@@ -356,9 +382,24 @@ export async function assignStaff(eventId: number, input: { userId: number; role
         [input.userId],
     );
     if (!user) throw badRequest('Choose an active staff member.', [{ field: 'userId', message: 'Not a staff member' }]);
+    const payBasis = input.payBasis ?? 'DAY_RATE';
     await execute(
-        'INSERT INTO tblEventStaff (event_id, user_id, role, camera_label, assigned_by) VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE camera_label = VALUES(camera_label)',
-        [eventId, input.userId, input.role, input.cameraLabel ?? null, ctx.userId],
+        `INSERT INTO tblEventStaff (event_id, user_id, role, camera_label, pay_basis, share_pct, commission_pct, day_rate_override, flat_amount, assigned_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE camera_label = VALUES(camera_label), pay_basis = VALUES(pay_basis), share_pct = VALUES(share_pct),
+           commission_pct = VALUES(commission_pct), day_rate_override = VALUES(day_rate_override), flat_amount = VALUES(flat_amount)`,
+        [
+            eventId,
+            input.userId,
+            input.role,
+            input.cameraLabel ?? null,
+            payBasis,
+            input.sharePct ?? null,
+            input.commissionPct ?? null,
+            input.dayRateOverride ?? null,
+            input.flatAmount ?? null,
+            ctx.userId,
+        ],
     );
     await audit(ctx, 'STAFF_ASSIGNED', 'events', eventId, { userId: input.userId, role: input.role });
     await notifyUser(input.userId, {

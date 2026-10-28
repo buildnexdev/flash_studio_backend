@@ -19,7 +19,7 @@ const roleEnum = z.enum(ROLES);
 const text = (max: number) => z.string().trim().max(max).optional();
 const addressBody = z.object({ line1: text(160), line2: text(160), city: text(80), state: text(80), pincode: text(12), country: text(60) });
 const profileBody = z.object({
-    personal: z.object({ dob: text(10), gender: text(20), bloodGroup: text(5), joinedOn: text(10), emergencyName: text(120), emergencyPhone: text(20) }).optional(),
+    personal: z.object({ dob: text(10), gender: text(20), bloodGroup: text(5), joinedOn: text(10), emergencyName: text(120), emergencyPhone: text(20), emergencyPhone2: text(20), photoUrl: text(500) }).optional(),
     address: addressBody.optional(),
     permanentAddress: addressBody.extend({ same: z.boolean().optional() }).optional(),
     education: z.array(z.object({ qualification: text(120), institution: text(160), field: text(120), year: text(10), grade: text(20) })).max(20).optional(),

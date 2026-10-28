@@ -26,6 +26,8 @@ export type BookingStatus = (typeof BOOKING_STATUSES)[number];
 export interface BookingDetails {
     serviceId?: number | null;
     packageId?: number | null;
+    /** Custom quotation amount in paise when packageId is empty. */
+    quotedAmount?: number | null;
     eventType: string;
     eventDate: string;
     startTime?: string | null;
@@ -42,15 +44,18 @@ export interface EnquiryInput extends BookingDetails {
     city?: string | null;
 }
 
-async function packagePricing(packageId: number | null | undefined, db: Db = pool) {
-    if (!packageId) return { total: 0, advance: 0 };
+async function packagePricing(packageId: number | null | undefined, quotedAmount: number | null | undefined, db: Db = pool) {
+    if (!packageId) {
+        const total = Math.max(0, Number(quotedAmount ?? 0) || 0);
+        return { total, advance: Math.round(total * 0.3) };
+    }
     const pkg = await getPackage(packageId, db);
     if (!pkg || !pkg.is_active) throw badRequest('The selected package is not available.', [{ field: 'packageId', message: 'Unavailable' }]);
     return { total: Number(pkg.price), advance: Math.round((Number(pkg.price) * Number(pkg.advance_percent)) / 100) };
 }
 
 async function insertBooking(db: PoolConnection, customerId: number, d: BookingDetails, source: 'WEBSITE' | 'ADMIN' | 'CUSTOMER_PORTAL', createdBy: number | null, internalNotes?: string | null) {
-    const pricing = await packagePricing(d.packageId, db);
+    const pricing = await packagePricing(d.packageId, d.quotedAmount, db);
     const bookingNo = await nextNumber('booking', db);
     const res = await execute(
         `INSERT INTO tblBooking (booking_no, customer_id, service_id, package_id, event_type, event_date, start_time, end_time, venue, guests, message, internal_notes,
@@ -187,9 +192,9 @@ export async function updateBooking(id: number, input: BookingDetails & { intern
             [input.serviceId ?? null, input.packageId ?? null, input.eventType, input.eventDate, input.startTime ?? null, input.endTime ?? null, input.venue ?? null, input.guests ?? null, input.message ?? null, input.internalNotes ?? null, id],
             conn,
         );
-        // Package change before quoting re-prices the booking
-        if (['ENQUIRY'].includes(b.status) && (input.packageId ?? null) !== b.package_id) {
-            const pricing = await packagePricing(input.packageId, conn);
+        // Package / custom quote change before quoting re-prices the booking
+        if (['ENQUIRY'].includes(b.status) && ((input.packageId ?? null) !== b.package_id || (!input.packageId && input.quotedAmount != null))) {
+            const pricing = await packagePricing(input.packageId, input.quotedAmount, conn);
             await execute('UPDATE tblBooking SET total_amount = ?, advance_amount = ? WHERE id = ?', [pricing.total, pricing.advance, id], conn);
         }
         await execute('UPDATE tblEvent SET event_type = ?, event_date = ?, start_time = ?, end_time = ?, venue = ? WHERE booking_id = ? AND status = ?', [

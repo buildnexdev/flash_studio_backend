@@ -94,10 +94,31 @@ function watermarkSvg(width: number, height: number, text: string): Buffer {
 </svg>`);
 }
 
-async function renderVariant(input: Buffer, size: number, watermark: string | null, quality: number): Promise<Buffer> {
+async function prepareLogo(width: number, height: number, logo: Buffer): Promise<{ input: Buffer; left: number; top: number }> {
+    const maxW = Math.max(72, Math.round(width * 0.2));
+    const resized = await sharp(logo)
+        .resize({ width: maxW, height: Math.round(maxW * 0.75), fit: 'inside', withoutEnlargement: true })
+        .ensureAlpha()
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+    const data = Buffer.from(resized.data);
+    for (let i = 3; i < data.length; i += 4) data[i] = Math.round(data[i] * 0.62);
+    const input = await sharp(data, { raw: { width: resized.info.width, height: resized.info.height, channels: 4 } }).png().toBuffer();
+    const pad = Math.max(10, Math.round(width * 0.028));
+    return {
+        input,
+        left: Math.max(0, width - resized.info.width - pad),
+        top: Math.max(0, height - resized.info.height - pad),
+    };
+}
+
+async function renderVariant(input: Buffer, size: number, watermark: string | null, logo: Buffer | null, quality: number): Promise<Buffer> {
     const resized = await sharp(input).rotate().resize({ width: size, height: size, fit: 'inside', withoutEnlargement: true }).toBuffer({ resolveWithObject: true });
     let pipeline = sharp(resized.data);
-    if (watermark) pipeline = pipeline.composite([{ input: watermarkSvg(resized.info.width, resized.info.height, watermark), top: 0, left: 0 }]);
+    const layers: { input: Buffer; top?: number; left?: number }[] = [];
+    if (watermark) layers.push({ input: watermarkSvg(resized.info.width, resized.info.height, watermark), top: 0, left: 0 });
+    if (logo) layers.push(await prepareLogo(resized.info.width, resized.info.height, logo));
+    if (layers.length) pipeline = pipeline.composite(layers);
     // Previews never carry EXIF/GPS data (sharp strips metadata unless withMetadata() is called)
     return pipeline.jpeg({ quality, mozjpeg: true, progressive: true }).toBuffer();
 }
@@ -107,8 +128,15 @@ export interface Variants {
     thumb: Buffer;
 }
 
-export async function makeVariants(input: Buffer, opts: { watermark: string | null; previewSize: number; thumbSize: number }): Promise<Variants> {
-    const [preview, thumb] = await Promise.all([renderVariant(input, opts.previewSize, opts.watermark, 78), renderVariant(input, opts.thumbSize, opts.watermark, 72)]);
+export async function makeVariants(
+    input: Buffer,
+    opts: { watermark: string | null; watermarkLogo?: Buffer | null; previewSize: number; thumbSize: number },
+): Promise<Variants> {
+    const logo = opts.watermarkLogo ?? null;
+    const [preview, thumb] = await Promise.all([
+        renderVariant(input, opts.previewSize, opts.watermark, logo, 78),
+        renderVariant(input, opts.thumbSize, opts.watermark, logo, 72),
+    ]);
     return { preview, thumb };
 }
 

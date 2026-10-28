@@ -43,7 +43,16 @@ async function processPhoto(photoId: number): Promise<void> {
 
     try {
         const source = await storage.get(p.edited_key ?? p.original_key);
-        const variants = await makeVariants(source, { watermark: g?.watermark_enabled ? gs.watermarkText : null, previewSize: gs.previewSize, thumbSize: gs.thumbSize });
+        let watermarkLogo: Buffer | null = null;
+        if (g?.watermark_enabled && gs.watermarkUseLogo && gs.watermarkLogoKey) {
+            watermarkLogo = await storage.get(gs.watermarkLogoKey).catch(() => null);
+        }
+        const variants = await makeVariants(source, {
+            watermark: g?.watermark_enabled ? gs.watermarkText : null,
+            watermarkLogo,
+            previewSize: gs.previewSize,
+            thumbSize: gs.thumbSize,
+        });
         const base = `events/${p.event_id}/previews/${uuid()}`;
         const previewKey = `${base}.jpg`;
         const thumbKey = `${base}_t.jpg`;
