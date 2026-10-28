@@ -153,7 +153,7 @@ describe('booking-to-delivery workflow', () => {
         const qr = await api().post(`/api/galleries/${galleryId}/qr`).set(bearer(admin)).send({ scope: 'EVENT', label: 'Reception table' });
         expect(qr.status).toBe(201);
         expect(qr.body.data.qr).toMatch(/^data:image\/png;base64,/);
-        qrToken = qr.body.data.url.split('/g/')[1];
+        qrToken = String(qr.body.data.url).split('/g/')[1].split(/[?#]/)[0];
         qrTokenId = qr.body.data.id;
 
         expect((await api().get(`/api/gallery/${galleryId}`)).status).toBe(401);
@@ -226,7 +226,7 @@ describe('booking-to-delivery workflow', () => {
         const album = await api().post(`/api/galleries/${galleryId}/albums`).set(bearer(admin)).send({ name: 'Family portraits' });
         await api().post('/api/photos/bulk').set(bearer(admin)).send({ ids: [photoIds[2]], action: 'move', albumId: album.body.data.id }).expect(200);
         const qr = await api().post(`/api/galleries/${galleryId}/qr`).set(bearer(admin)).send({ scope: 'ALBUM', albumId: album.body.data.id, maxUses: 1 });
-        const token = qr.body.data.url.split('/g/')[1];
+        const token = String(qr.body.data.url).split('/g/')[1].split(/[?#]/)[0];
         const s = (await api().post('/api/gallery/access').send({ token })).body.data.session;
         const photos = await api().get(`/api/gallery/${galleryId}/photos`).set('X-Gallery-Session', s).set('X-Event-Phone', phoneProof);
         expect(photos.body.data.items.map((p: { id: number }) => p.id)).toEqual([photoIds[2]]);

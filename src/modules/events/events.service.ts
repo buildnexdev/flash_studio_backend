@@ -12,7 +12,7 @@ import { toSqlDateTime } from '../../utils/dates.js';
 import { audit, type AuditContext } from '../audit/audit.service.js';
 import { notifyCustomer, notifyUser } from '../notifications/notifications.service.js';
 import { signedUrlOrNull, storage } from '../../lib/storage.js';
-import { ensureEventQr, galleryUrl } from '../galleries/galleries.service.js';
+import { ensureEventQr, galleryLinkUrl, galleryUrl } from '../galleries/galleries.service.js';
 import { decrypt } from '../../utils/crypto.js';
 import { qrDataUrl } from '../../lib/qr.js';
 import { getSetting } from '../settings/settings.service.js';
@@ -157,7 +157,7 @@ export async function listEvents(f: EventFilter) {
             if (row.token_encrypted) {
                 try {
                     qr_token = decrypt(row.token_encrypted);
-                    public_url = galleryUrl(qr_token);
+                    public_url = galleryLinkUrl(qr_token);
                 } catch {
                     // fallback
                 }
@@ -240,12 +240,14 @@ export async function getEvent(id: number) {
         );
         if (tokenRow) {
             qrToken = decrypt(tokenRow.token_encrypted);
-            publicUrl = galleryUrl(qrToken);
-            qrData = await qrDataUrl(publicUrl, 512);
+            publicUrl = galleryLinkUrl(qrToken);
+            qrData = await qrDataUrl(galleryUrl(qrToken), 512);
         } else {
             const gen = await ensureEventQr(id, { userId: null, ip: '127.0.0.1', userAgent: 'system' });
             if (gen && 'url' in gen) {
-                publicUrl = gen.url;
+                const raw = String(gen.url).split('/g/')[1]?.split(/[?#]/)[0] ?? '';
+                qrToken = raw || null;
+                publicUrl = raw ? galleryLinkUrl(raw) : null;
                 qrData = gen.qr;
             }
         }
