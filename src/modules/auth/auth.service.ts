@@ -5,7 +5,7 @@ import bcrypt from 'bcryptjs';
 import type { PoolConnection } from 'mysql2/promise';
 import { config } from '../../config/env.js';
 import { ROLE_HOME, primaryRole, type RoleCode } from '../../config/rbac.js';
-import { currentStudioSlug, execute, primaryCompanyId, query, queryOne, withTransaction, type Db, pool } from '../../db/pool.js';
+import { currentStudioSlug, execute, primaryCompanyId, query, queryOne, withTransaction, type Db } from '../../db/pool.js';
 import { invalidateUserCache, loadAuthUser, serializeUser, signAccessToken } from '../../middleware/auth.js';
 import { sendEmail, sendSms, sendWhatsApp } from '../../lib/channels.js';
 import { numericCode, randomToken, sha256, uuid } from '../../utils/crypto.js';
@@ -47,7 +47,7 @@ async function roleIdByCode(code: RoleCode, db: Db): Promise<number> {
     return row.id;
 }
 
-export async function issueTokens(userId: number, meta: SessionMeta, familyId = uuid(), db: Db = pool): Promise<IssuedTokens & { refreshId: number }> {
+export async function issueTokens(userId: number, meta: SessionMeta, familyId = uuid(), db?: Db): Promise<IssuedTokens & { refreshId: number }> {
     const u = await queryOne<{ token_version: number }>('SELECT token_version FROM tblUser WHERE id = ?', [userId], db);
     const refreshToken = randomToken(48);
     const expires = new Date(Date.now() + config.REFRESH_TOKEN_DAYS * 86_400_000);

@@ -3,6 +3,7 @@
  * Devevloper : Nandhakumar@gmail.com
  * Last Edited : 06-10-2026
 */
+import { existsSync } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,8 +11,22 @@ import mysql from 'mysql2/promise';
 import { config } from '../config/env.js';
 import { loadPrimaryKeyColumns, renamePrimaryKeys, rewriteReferencedPrimaryKeys } from './primary-keys.js';
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const migrationsDir = path.resolve(here, 'migrations');
+function resolveMigrationsDir(): string {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const candidates = [
+        path.resolve(here, 'migrations'),
+        path.resolve(here, '../../src/db/migrations'),
+        path.resolve(here, '../src/db/migrations'),
+        path.resolve(process.cwd(), 'src/db/migrations'),
+        path.resolve(process.cwd(), 'flash_studio_backend/src/db/migrations'),
+    ];
+    for (const c of candidates) {
+        if (existsSync(c)) return c;
+    }
+    return path.resolve(here, 'migrations');
+}
+
+const migrationsDir = resolveMigrationsDir();
 
 /** Keep SQL that follows a leading `--` comment. The comment is not the whole statement. */
 function stripLeadingComments(chunk: string): string {

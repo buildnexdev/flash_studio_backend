@@ -6,7 +6,7 @@
 import { Router, type CookieOptions, type Request, type Response } from 'express';
 import { z } from 'zod';
 import { config } from '../../config/env.js';
-import { platformDatabaseName, pool, runInTenant } from '../../db/pool.js';
+import { platformDatabaseName, pool, runInTenant, type TenantScope } from '../../db/pool.js';
 import { authenticate, serializeUser } from '../../middleware/auth.js';
 import { STUDIO_COOKIE } from '../../middleware/tenant.js';
 import { authLimiter, otpLimiter } from '../../middleware/rate-limit.js';
@@ -14,7 +14,7 @@ import { validate } from '../../middleware/validate.js';
 import { asyncHandler, clientIp, ok, userAgent } from '../../utils/http.js';
 import { email, optionalText, password, phone } from '../../utils/schemas.js';
 import { auditCtx } from '../audit/audit.service.js';
-import { resolveTenant } from '../companies/companies.service.js';
+import { findTenantForIdentifier, resolveTenant } from '../companies/companies.service.js';
 import * as auth from './auth.service.js';
 
 export const REFRESH_COOKIE = 'pl_rt';
@@ -83,16 +83,29 @@ router.post(
     authLimiter,
     validate(z.object({ identifier: z.string().trim().min(3).max(190), password: z.string().min(1).max(200), studio: z.string().trim().max(80).optional() })),
     asyncHandler(async (req, res) => {
-        const slug = (req.body.studio as string | undefined)?.trim().toLowerCase() ?? '';
-        const signIn = async () => {
+        let slug = (req.body.studio as string | undefined)?.trim().toLowerCase() ?? '';
+        if (!slug) {
+            const headerSlug = typeof req.headers['x-studio-slug'] === 'string' ? req.headers['x-studio-slug'].trim().toLowerCase() : '';
+            const cookieSlug = typeof req.cookies?.[STUDIO_COOKIE] === 'string' ? req.cookies[STUDIO_COOKIE].trim().toLowerCase() : '';
+            slug = headerSlug || cookieSlug;
+        }
+
+        let tenantScope: TenantScope;
+        if (slug) {
+            tenantScope = await resolveTenant(slug);
+        } else {
+            const detected = await findTenantForIdentifier(req.body.identifier);
+            if (detected) {
+                tenantScope = detected.scope;
+            } else {
+                tenantScope = { pool, database: platformDatabaseName(), slug: null };
+            }
+        }
+
+        await runInTenant(tenantScope, async () => {
             const session = await auth.login(req.body.identifier, req.body.password, meta(req), auditCtx(req));
             sendSession(req, res, session);
-        };
-        if (!slug) {
-            await runInTenant({ pool, database: platformDatabaseName(), slug: null }, signIn);
-            return;
-        }
-        await runInTenant(await resolveTenant(slug), signIn);
+        });
     }),
 );
 

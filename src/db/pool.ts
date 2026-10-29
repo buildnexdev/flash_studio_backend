@@ -110,7 +110,11 @@ export async function queryOne<T = Row>(sql: string, params: unknown[] = [], db?
 /** Studio row new users are attached to. Prefers the primary company. */
 export async function primaryCompanyId(db?: Db): Promise<number> {
     const row = await queryOne<{ id: number }>('SELECT id FROM tblCompany ORDER BY is_primary DESC, id ASC LIMIT 1', [], db);
-    if (!row) throw new Error('No company is available to assign to the user.');
+    if (!row) {
+        const anyRow = await queryOne<{ id: number }>('SELECT id FROM tblCompany LIMIT 1', [], db);
+        if (anyRow) return anyRow.id;
+        throw new Error('No company is available to assign to the user.');
+    }
     return row.id;
 }
 
