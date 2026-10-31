@@ -1,7 +1,8 @@
 // Developer by: Buildnexdev.in
 // Last Edited : 21-10-2026
 import bcrypt from 'bcryptjs';
-import { databaseUrlFor, execute, platformDatabaseName, platformExecute, platformQuery, platformQueryOne, poolForDatabase, queryOne, runInTenant } from '../../db/pool.js';
+import type { RowDataPacket } from 'mysql2/promise';
+import { databaseUrlFor, execute, platformDatabaseName, platformExecute, platformQuery, platformQueryOne, poolForDatabase, queryOne, runInTenant, type TenantScope } from '../../db/pool.js';
 import { runMigrations } from '../../db/migrate.js';
 import { ensureUser, seedCatalog, seedRbac, seedSettings } from '../../db/seed.js';
 import { sendEmail } from '../../lib/channels.js';
@@ -15,11 +16,22 @@ export interface CompanyInput {
     ownerEmail: string;
     ownerPassword: string;
     phone?: string | null;
+    address?: string | null;
     city?: string | null;
     tagline?: string | null;
     companyEmail?: string | null;
     about?: string | null;
+    notes?: string | null;
     modules?: string[] | null;
+    requestId?: number | null;
+    logoUrl?: string | null;
+}
+
+export interface CompanyRequestInput {
+    companyName: string;
+    phone: string;
+    email: string;
+    notes?: string | null;
 }
 
 const slugify = (name: string) =>
@@ -39,8 +51,9 @@ export function studioDatabaseName(name: string): string {
 }
 
 export async function listCompanies() {
+    await ensureCompanyPlatformSchema();
     return platformQuery(
-        `SELECT id, name, slug, database_name, status, email, phone, city, owner_name, owner_email, is_primary, created_at
+        `SELECT id, name, slug, database_name, status, email, phone, address, city, owner_name, owner_email, is_primary, notes, modules, logo_url, created_at
            FROM tblCompany ORDER BY is_primary DESC, name`,
     );
 }
@@ -60,6 +73,73 @@ export async function resolveTenant(slug: string) {
     };
 }
 
+/** Automatically resolves which tenant database a user belongs to based on their email or phone number. */
+export async function findTenantForIdentifier(identifier: string): Promise<{ scope: TenantScope; slug: string } | null> {
+    const key = identifier.trim();
+    const cleanPhone = key.replace(/[^\d+]/g, '');
+    const phoneWithout91 = cleanPhone.replace(/^(\+?91)/, '');
+    const isEmail = key.includes('@');
+
+    // 1. Check if user exists in the platform database (e.g. Super Admin or default studio)
+    const inPlatform = await platformQueryOne<{ id: number }>(
+        isEmail
+            ? 'SELECT id FROM tblUser WHERE email = ? AND deleted_at IS NULL LIMIT 1'
+            : 'SELECT id FROM tblUser WHERE (phone = ? OR phone = ? OR phone = ? OR (? = ? AND email = ?)) AND deleted_at IS NULL LIMIT 1',
+        isEmail
+            ? [key.toLowerCase()]
+            : [cleanPhone, `+91${phoneWithout91}`, phoneWithout91, cleanPhone, '9000000001', 'admin@photolab.test'],
+    );
+    if (inPlatform) {
+        return null;
+    }
+
+    // 2. Check if identifier directly matches a registered studio in tblCompany (owner email or phone)
+    const company = await platformQueryOne<{ slug: string; database_name: string; status: string }>(
+        `SELECT slug, database_name, status FROM tblCompany 
+          WHERE status = 'ACTIVE' 
+            AND (email = ? OR owner_email = ? OR phone = ? OR phone = ? OR phone = ?)
+          LIMIT 1`,
+        [key.toLowerCase(), key.toLowerCase(), key, cleanPhone, phoneWithout91],
+    );
+    if (company) {
+        return {
+            scope: {
+                pool: poolForDatabase(company.database_name),
+                database: company.database_name,
+                slug: company.slug,
+            },
+            slug: company.slug,
+        };
+    }
+
+    // 3. Search all active tenant databases to see which one has this user
+    const tenantCompanies = await platformQuery<{ slug: string; database_name: string }>(
+        `SELECT slug, database_name FROM tblCompany WHERE status = 'ACTIVE' AND database_name != ?`,
+        [platformDatabaseName()],
+    );
+    for (const t of tenantCompanies) {
+        try {
+            const tPool = poolForDatabase(t.database_name);
+            const [rows] = await tPool.query<RowDataPacket[]>(
+                isEmail
+                    ? 'SELECT userID AS id FROM tblUser WHERE email = ? AND deleted_at IS NULL LIMIT 1'
+                    : 'SELECT userID AS id FROM tblUser WHERE (phone = ? OR phone = ? OR phone = ?) AND deleted_at IS NULL LIMIT 1',
+                isEmail ? [key.toLowerCase()] : [cleanPhone, `+91${phoneWithout91}`, phoneWithout91],
+            );
+            if (rows && rows.length > 0) {
+                return {
+                    scope: { pool: tPool, database: t.database_name, slug: t.slug },
+                    slug: t.slug,
+                };
+            }
+        } catch {
+            // ignore database connection or query error
+        }
+    }
+
+    return null;
+}
+
 export async function createCompany(input: CompanyInput) {
     const slug = slugify(input.name);
     if (!slug) throw badRequest('Studio name needs letters or numbers.', [{ field: 'name', message: 'Use letters or numbers' }]);
@@ -70,38 +150,86 @@ export async function createCompany(input: CompanyInput) {
     const dup = await platformQueryOne('SELECT id FROM tblCompany WHERE slug = ? OR database_name = ?', [slug, databaseName]);
     if (dup) throw conflict('A studio with this name already exists.');
 
-    await runMigrations({ databaseUrl: databaseUrlFor(databaseName), log: true });
-    const scope = { pool: poolForDatabase(databaseName), database: databaseName, slug };
-    await runInTenant(scope, async () => {
-        await seedRbac(false);
-        await seedSettings();
-        await seedCatalog();
-        await updateSetting(
-            'studio',
-            {
-                ...DEFAULT_SETTINGS.studio,
-                name: input.name.trim(),
-                tagline: input.tagline?.trim() || DEFAULT_SETTINGS.studio.tagline,
-                email: input.ownerEmail,
-                phone: input.phone?.trim() || '',
-                city: input.city?.trim() || '',
-            },
-            null,
-        );
-        await updateSetting('gallery', { ...DEFAULT_SETTINGS.gallery, watermarkText: input.name.trim() }, null);
-        await ensureUser(
-            { role: 'STUDIO_OWNER', name: input.ownerName.trim(), email: input.ownerEmail.trim().toLowerCase(), phone: input.phone?.trim() || null },
-            input.ownerPassword,
-        );
-    });
-
     const companyEmail = (input.companyEmail || input.ownerEmail).trim().toLowerCase();
     const modulesStr = input.modules && input.modules.length ? input.modules.join(',') : null;
+    await ensureCompanyPlatformSchema();
+
+    try {
+        await runMigrations({ databaseUrl: databaseUrlFor(databaseName), log: true });
+        const scope = { pool: poolForDatabase(databaseName), database: databaseName, slug };
+        await runInTenant(scope, async () => {
+            await execute(
+                `INSERT INTO tblCompany (name, slug, database_name, status, email, phone, address, city, owner_name, owner_email, is_primary, modules, logo_url)
+                 VALUES (?, ?, ?, 'ACTIVE', ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+                [
+                    input.name.trim(),
+                    slug,
+                    databaseName,
+                    companyEmail,
+                    input.phone?.trim() || null,
+                    input.address?.trim() || null,
+                    input.city?.trim() || null,
+                    input.ownerName.trim(),
+                    input.ownerEmail.trim().toLowerCase(),
+                    modulesStr,
+                    input.logoUrl || null,
+                ],
+            );
+            await seedRbac(false);
+            await seedSettings();
+            await seedCatalog();
+            await updateSetting(
+                'studio',
+                {
+                    ...DEFAULT_SETTINGS.studio,
+                    name: input.name.trim(),
+                    tagline: input.tagline?.trim() || DEFAULT_SETTINGS.studio.tagline,
+                    email: input.ownerEmail,
+                    phone: input.phone?.trim() || '',
+                    city: input.city?.trim() || '',
+                    logoUrl: input.logoUrl || '',
+                },
+                null,
+            );
+            await updateSetting('gallery', { ...DEFAULT_SETTINGS.gallery, watermarkText: input.name.trim() }, null);
+            await ensureUser(
+                { role: 'STUDIO_OWNER', name: input.ownerName.trim(), email: input.ownerEmail.trim().toLowerCase(), phone: input.phone?.trim() || null },
+                input.ownerPassword,
+            );
+        });
+    } catch (err) {
+        try {
+            await platformExecute(`DROP DATABASE IF EXISTS \`${databaseName}\``);
+        } catch {
+            // ignore cleanup failure
+        }
+        throw err;
+    }
+
     const res = await platformExecute(
-        `INSERT INTO tblCompany (name, slug, database_name, status, email, phone, city, owner_name, owner_email, is_primary, about_us, modules)
-         VALUES (?, ?, ?, 'ACTIVE', ?, ?, ?, ?, ?, 0, ?, ?)`,
-        [input.name.trim(), slug, databaseName, companyEmail, input.phone?.trim() || null, input.city?.trim() || null, input.ownerName.trim(), input.ownerEmail.trim().toLowerCase(), input.about?.trim() || null, modulesStr],
+        `INSERT INTO tblCompany (name, slug, database_name, status, email, phone, address, city, owner_name, owner_email, is_primary, about_us, notes, modules, logo_url)
+         VALUES (?, ?, ?, 'ACTIVE', ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
+        [
+            input.name.trim(),
+            slug,
+            databaseName,
+            companyEmail,
+            input.phone?.trim() || null,
+            input.address?.trim() || null,
+            input.city?.trim() || null,
+            input.ownerName.trim(),
+            input.ownerEmail.trim().toLowerCase(),
+            input.about?.trim() || null,
+            input.notes?.trim() || null,
+            modulesStr,
+            input.logoUrl || null,
+        ],
     );
+
+    if (input.requestId) {
+        await platformExecute('UPDATE tblCompanyRequest SET status = ?, company_id = ? WHERE id = ?', ['APPROVED', res.insertId, input.requestId]).catch(() => undefined);
+    }
+
     return {
         id: res.insertId,
         name: input.name.trim(),
@@ -112,12 +240,55 @@ export async function createCompany(input: CompanyInput) {
     };
 }
 
-export async function setCompanyStatus(id: number, status: 'ACTIVE' | 'SUSPENDED') {
-    const row = await platformQueryOne<{ id: number; is_primary: number; name: string }>('SELECT id, is_primary, name FROM tblCompany WHERE id = ?', [id]);
+export async function updateCompany(
+    id: number,
+    input: { status?: 'ACTIVE' | 'SUSPENDED'; logoUrl?: string | null; name?: string; phone?: string | null; address?: string | null },
+) {
+    const row = await platformQueryOne<{ id: number; is_primary: number; name: string; database_name: string }>('SELECT id, is_primary, name, database_name FROM tblCompany WHERE id = ?', [id]);
     if (!row) throw notFound('Studio');
-    if (row.is_primary && status === 'SUSPENDED') throw conflict('The primary studio cannot be suspended.');
-    await platformExecute('UPDATE tblCompany SET status = ? WHERE id = ?', [status, id]);
-    return platformQueryOne('SELECT id, name, slug, database_name, status, is_primary FROM tblCompany WHERE id = ?', [id]);
+    if (row.is_primary && input.status === 'SUSPENDED') throw conflict('The primary studio cannot be suspended.');
+    await ensureCompanyPlatformSchema();
+    const sets: string[] = [];
+    const params: unknown[] = [];
+    if (input.status) {
+        sets.push('status = ?');
+        params.push(input.status);
+    }
+    if (input.logoUrl !== undefined) {
+        sets.push('logo_url = ?');
+        params.push(input.logoUrl);
+    }
+    if (input.name) {
+        sets.push('name = ?');
+        params.push(input.name.trim());
+    }
+    if (input.phone !== undefined) {
+        sets.push('phone = ?');
+        params.push(input.phone?.trim() || null);
+    }
+    if (input.address !== undefined) {
+        sets.push('address = ?');
+        params.push(input.address?.trim() || null);
+    }
+    if (sets.length) {
+        params.push(id);
+        await platformExecute(`UPDATE tblCompany SET ${sets.join(', ')} WHERE id = ?`, params);
+
+        // Also sync logoUrl to tenant database if provided
+        if (input.logoUrl !== undefined && row.database_name) {
+            try {
+                const tPool = poolForDatabase(row.database_name);
+                await tPool.query('UPDATE tblCompany SET logo_url = ? WHERE is_primary = 1 OR id = ?', [input.logoUrl, id]);
+            } catch {
+                // ignore tenant sync error
+            }
+        }
+    }
+    return platformQueryOne('SELECT id, name, slug, database_name, status, email, phone, address, logo_url, is_primary FROM tblCompany WHERE id = ?', [id]);
+}
+
+export async function setCompanyStatus(id: number, status: 'ACTIVE' | 'SUSPENDED') {
+    return updateCompany(id, { status });
 }
 
 export const COMPANY_MODULES = [
@@ -159,6 +330,7 @@ async function ignoreSchemaError(sql: string) {
 export async function ensureCompanyPlatformSchema() {
     const alters = [
         'ALTER TABLE tblCompany ADD COLUMN address VARCHAR(300) NULL',
+        'ALTER TABLE tblCompany ADD COLUMN notes TEXT NULL',
         'ALTER TABLE tblCompany ADD COLUMN logo_url MEDIUMTEXT NULL',
         'ALTER TABLE tblCompany ADD COLUMN gst_number VARCHAR(20) NULL',
         'ALTER TABLE tblCompany ADD COLUMN about_us TEXT NULL',
@@ -184,6 +356,51 @@ export async function ensureCompanyPlatformSchema() {
             UNIQUE KEY uq_signup_order (provider_order_id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
     );
+    await ignoreSchemaError(
+        `CREATE TABLE IF NOT EXISTS tblCompanyRequest (
+            id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+            company_name VARCHAR(150) NOT NULL,
+            phone VARCHAR(20) NOT NULL,
+            email VARCHAR(150) NOT NULL,
+            notes TEXT NULL,
+            status ENUM('PENDING', 'CONTACTED', 'APPROVED', 'REJECTED') NOT NULL DEFAULT 'PENDING',
+            company_id INT UNSIGNED NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+    );
+}
+
+export async function createCompanyRequest(input: CompanyRequestInput) {
+    await ensureCompanyPlatformSchema();
+    const cleanPhone = input.phone.replace(/\D/g, '').slice(-10);
+    const res = await platformExecute(
+        `INSERT INTO tblCompanyRequest (company_name, phone, email, notes, status)
+         VALUES (?, ?, ?, ?, 'PENDING')`,
+        [input.companyName.trim(), cleanPhone, input.email.trim().toLowerCase(), input.notes?.trim() || null],
+    );
+    return { id: res.insertId, companyName: input.companyName.trim() };
+}
+
+export async function listCompanyRequests() {
+    await ensureCompanyPlatformSchema();
+    return platformQuery(
+        `SELECT id, company_name, phone, email, notes, status, company_id, created_at, updated_at
+         FROM tblCompanyRequest ORDER BY created_at DESC`,
+    );
+}
+
+export async function updateCompanyRequestStatus(id: number, status: 'PENDING' | 'CONTACTED' | 'APPROVED' | 'REJECTED') {
+    await ensureCompanyPlatformSchema();
+    await platformExecute('UPDATE tblCompanyRequest SET status = ? WHERE id = ?', [status, id]);
+    return platformQueryOne('SELECT id, company_name, phone, email, notes, status, company_id, created_at, updated_at FROM tblCompanyRequest WHERE id = ?', [id]);
+}
+
+export async function deleteCompanyRequest(id: number) {
+    await ensureCompanyPlatformSchema();
+    await platformExecute('DELETE FROM tblCompanyRequest WHERE id = ?', [id]);
+    return { success: true };
 }
 
 const phoneDigits = (phone: string) => phone.replace(/\D/g, '').slice(-10);

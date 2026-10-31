@@ -32,7 +32,7 @@ router.get(
     '/',
     validate(z.object({ category: z.enum(categories).optional(), status: z.enum(statuses).optional() }), 'query'),
     asyncHandler(async (req, res) => {
-        ok(res, await assets.listAssets(req.query as { category?: string; status?: string }));
+        ok(res, await assets.listAssets({ ...(req.query as { category?: string; status?: string }), companyId: req.user?.companyId ?? undefined }));
     }),
 );
 
@@ -74,7 +74,7 @@ router.get(
     '/:id',
     validate(idParam, 'params'),
     asyncHandler(async (req, res) => {
-        ok(res, await assets.getAsset(Number(req.params.id)));
+        ok(res, await assets.getAsset(Number(req.params.id), req.user?.companyId));
     }),
 );
 

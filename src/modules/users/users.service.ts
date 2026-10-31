@@ -264,13 +264,23 @@ export async function assignUserRole(userId: number, role: RoleCode, actor: { id
 }
 
 /** Staff that can be assigned to events, filtered by role. */
-export async function assignableStaff(role?: RoleCode) {
+export async function assignableStaff(role?: RoleCode, companyId?: number | null) {
+    const where = ["u.deleted_at IS NULL", "u.status = 'ACTIVE'", "r.code <> 'CUSTOMER'"];
+    const params: unknown[] = [];
+    if (companyId) {
+        where.push('u.company_id = ?');
+        params.push(companyId);
+    }
+    if (role) {
+        where.push('r.code = ?');
+        params.push(role);
+    }
     return query(
         `SELECT DISTINCT u.id, u.name, u.email, u.phone, r.code AS role
            FROM tblUser u JOIN tblUserRole ur ON ur.user_id = u.id JOIN tblRole r ON r.id = ur.role_id
-          WHERE u.deleted_at IS NULL AND u.status = 'ACTIVE' AND r.code <> 'CUSTOMER' ${role ? 'AND r.code = ?' : ''}
+          WHERE ${where.join(' AND ')}
           ORDER BY u.name`,
-        role ? [role] : [],
+        params,
     );
 }
 

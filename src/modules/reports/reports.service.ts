@@ -20,61 +20,67 @@ function series<T extends { day: string }>(range: ResolvedRange, rows: T[], fiel
 
 /* ---------------- Dashboard ---------------- */
 
-export async function dashboard(q: RangeQuery) {
+export async function dashboard(q: RangeQuery, companyId?: number | null) {
     const range = resolveRange(q);
     const today = resolveRange({ range: 'today' });
     const b = [range.startUtc, range.endUtc];
 
+    const cFilter = companyId ? 'AND company_id = ?' : '';
+    const cParams = companyId ? [companyId] : [];
+
     const [money, todayMoney, pending, counts, photoSales, downloads, pendingOrders] = await Promise.all([
-        queryOne(`SELECT COALESCE(SUM(amount - refunded_amount), 0) AS total, COALESCE(SUM(CASE WHEN paid_at >= ? AND paid_at < ? THEN amount - refunded_amount END), 0) AS in_range FROM tblPayment WHERE status IN ${PAID}`, b),
-        queryOne(`SELECT COALESCE(SUM(amount - refunded_amount), 0) AS total, COUNT(*) AS n FROM tblPayment WHERE status IN ${PAID} AND paid_at >= ? AND paid_at < ?`, [today.startUtc, today.endUtc]),
+        queryOne(`SELECT COALESCE(SUM(amount - refunded_amount), 0) AS total, COALESCE(SUM(CASE WHEN paid_at >= ? AND paid_at < ? THEN amount - refunded_amount END), 0) AS in_range FROM tblPayment WHERE status IN ${PAID} ${cFilter}`, companyId ? [...b, companyId] : b),
+        queryOne(`SELECT COALESCE(SUM(amount - refunded_amount), 0) AS total, COUNT(*) AS n FROM tblPayment WHERE status IN ${PAID} AND paid_at >= ? AND paid_at < ? ${cFilter}`, companyId ? [today.startUtc, today.endUtc, companyId] : [today.startUtc, today.endUtc]),
         queryOne(
             `SELECT COALESCE(SUM(total_amount - paid_amount), 0) AS bookings_due, COUNT(*) AS n FROM tblBooking
-              WHERE deleted_at IS NULL AND status IN ('ADVANCE_PENDING','CONFIRMED','IN_PROGRESS','DELIVERED') AND total_amount > paid_amount`,
+              WHERE deleted_at IS NULL AND status IN ('ADVANCE_PENDING','CONFIRMED','IN_PROGRESS','DELIVERED') AND total_amount > paid_amount ${cFilter}`,
+            cParams,
         ),
         queryOne(
-            `SELECT (SELECT COUNT(*) FROM tblBooking WHERE deleted_at IS NULL) AS total_bookings,
-                    (SELECT COUNT(*) FROM tblBooking WHERE deleted_at IS NULL AND created_at >= ? AND created_at < ?) AS bookings_in_range,
-                    (SELECT COUNT(*) FROM tblBooking WHERE deleted_at IS NULL AND status = 'ENQUIRY') AS new_enquiries,
-                    (SELECT COUNT(*) FROM tblEvent WHERE deleted_at IS NULL AND status = 'UPCOMING' AND event_date >= ?) AS upcoming_events,
-                    (SELECT COUNT(*) FROM tblEvent WHERE deleted_at IS NULL AND status IN ('LIVE','UPLOADING','PROCESSING')) AS active_events,
-                    (SELECT COUNT(*) FROM tblCustomer WHERE deleted_at IS NULL) AS total_customers,
-                    (SELECT COUNT(*) FROM tblCustomer WHERE deleted_at IS NULL AND created_at >= ? AND created_at < ?) AS new_customers`,
-            [...b, today.from, ...b],
+            `SELECT (SELECT COUNT(*) FROM tblBooking WHERE deleted_at IS NULL ${cFilter}) AS total_bookings,
+                    (SELECT COUNT(*) FROM tblBooking WHERE deleted_at IS NULL AND created_at >= ? AND created_at < ? ${cFilter}) AS bookings_in_range,
+                    (SELECT COUNT(*) FROM tblBooking WHERE deleted_at IS NULL AND status = 'ENQUIRY' ${cFilter}) AS new_enquiries,
+                    (SELECT COUNT(*) FROM tblEvent WHERE deleted_at IS NULL AND status = 'UPCOMING' AND event_date >= ? ${cFilter}) AS upcoming_events,
+                    (SELECT COUNT(*) FROM tblEvent WHERE deleted_at IS NULL AND status IN ('LIVE','UPLOADING','PROCESSING') ${cFilter}) AS active_events,
+                    (SELECT COUNT(*) FROM tblCustomer WHERE deleted_at IS NULL ${cFilter}) AS total_customers,
+                    (SELECT COUNT(*) FROM tblCustomer WHERE deleted_at IS NULL AND created_at >= ? AND created_at < ? ${cFilter}) AS new_customers`,
+            [...cParams, ...b, ...cParams, ...cParams, today.from, ...cParams, ...cParams, ...cParams, ...b, ...cParams],
         ),
         queryOne(
             `SELECT COUNT(oi.id) AS photos, COALESCE(SUM(oi.total), 0) AS amount FROM tblOrderItem oi JOIN tblOrder o ON o.id = oi.order_id
-              WHERE oi.item_type = 'PHOTO_DOWNLOAD' AND o.status IN ('PAID','PROCESSING','READY','DELIVERED','COMPLETED') AND o.paid_at >= ? AND o.paid_at < ?`,
-            b,
+              WHERE oi.item_type = 'PHOTO_DOWNLOAD' AND o.status IN ('PAID','PROCESSING','READY','DELIVERED','COMPLETED') AND o.paid_at >= ? AND o.paid_at < ? ${companyId ? 'AND o.company_id = ?' : ''}`,
+            companyId ? [...b, companyId] : b,
         ),
-        queryOne('SELECT COUNT(*) AS n, COUNT(DISTINCT photo_id) AS photos FROM tblDownload WHERE created_at >= ? AND created_at < ?', b),
-        queryOne("SELECT COUNT(*) AS n, COALESCE(SUM(status = 'CREATED'), 0) AS unpaid FROM tblOrder WHERE deleted_at IS NULL AND status IN ('CREATED','PAID','PROCESSING','READY')"),
+        queryOne(`SELECT COUNT(*) AS n, COUNT(DISTINCT photo_id) AS photos FROM tblDownload WHERE created_at >= ? AND created_at < ? ${cFilter}`, companyId ? [...b, companyId] : b),
+        queryOne(`SELECT COUNT(*) AS n, COALESCE(SUM(status = 'CREATED'), 0) AS unpaid FROM tblOrder WHERE deleted_at IS NULL AND status IN ('CREATED','PAID','PROCESSING','READY') ${cFilter}`, cParams),
     ]);
 
     const [revenueRows, bookingRows, paymentStatus, viewRows, downloadRows, eventPerf, recentBookings, recentPayments, upcoming] = await Promise.all([
         query<{ day: string; revenue: number; payments: number }>(
-            `SELECT ${localDateSql('paid_at')} AS day, SUM(amount - refunded_amount) AS revenue, COUNT(*) AS payments FROM tblPayment WHERE status IN ${PAID} AND paid_at >= ? AND paid_at < ? GROUP BY day`,
-            b,
+            `SELECT ${localDateSql('paid_at')} AS day, SUM(amount - refunded_amount) AS revenue, COUNT(*) AS payments FROM tblPayment WHERE status IN ${PAID} AND paid_at >= ? AND paid_at < ? ${cFilter} GROUP BY day`,
+            companyId ? [...b, companyId] : b,
         ),
-        query<{ day: string; bookings: number }>(`SELECT ${localDateSql('created_at')} AS day, COUNT(*) AS bookings FROM tblBooking WHERE deleted_at IS NULL AND created_at >= ? AND created_at < ? GROUP BY day`, b),
-        query('SELECT status, COUNT(*) AS count, COALESCE(SUM(amount), 0) AS amount FROM tblPayment WHERE created_at >= ? AND created_at < ? GROUP BY status', b),
-        query<{ day: string; views: number }>(`SELECT ${localDateSql('created_at')} AS day, COUNT(*) AS views FROM tblPhotoView WHERE created_at >= ? AND created_at < ? GROUP BY day`, b),
-        query<{ day: string; downloads: number }>(`SELECT ${localDateSql('created_at')} AS day, COUNT(*) AS downloads FROM tblDownload WHERE created_at >= ? AND created_at < ? GROUP BY day`, b),
-        eventPerformanceRows(range, 8),
+        query<{ day: string; bookings: number }>(`SELECT ${localDateSql('created_at')} AS day, COUNT(*) AS bookings FROM tblBooking WHERE deleted_at IS NULL AND created_at >= ? AND created_at < ? ${cFilter} GROUP BY day`, companyId ? [...b, companyId] : b),
+        query(`SELECT status, COUNT(*) AS count, COALESCE(SUM(amount), 0) AS amount FROM tblPayment WHERE created_at >= ? AND created_at < ? ${cFilter} GROUP BY status`, companyId ? [...b, companyId] : b),
+        query<{ day: string; views: number }>(`SELECT ${localDateSql('v.created_at')} AS day, COUNT(*) AS views FROM tblPhotoView v JOIN tblEvent e ON e.id = v.event_id WHERE v.created_at >= ? AND v.created_at < ? ${companyId ? 'AND e.company_id = ?' : ''} GROUP BY day`, companyId ? [...b, companyId] : b),
+        query<{ day: string; downloads: number }>(`SELECT ${localDateSql('created_at')} AS day, COUNT(*) AS downloads FROM tblDownload WHERE created_at >= ? AND created_at < ? ${cFilter} GROUP BY day`, companyId ? [...b, companyId] : b),
+        eventPerformanceRows(range, 8, companyId),
         query(
             `SELECT b.id, b.booking_no, b.event_type, b.event_date, b.status, b.total_amount, c.name AS customer_name, b.created_at
-               FROM tblBooking b JOIN tblCustomer c ON c.id = b.customer_id WHERE b.deleted_at IS NULL ORDER BY b.id DESC LIMIT 6`,
+               FROM tblBooking b JOIN tblCustomer c ON c.id = b.customer_id WHERE b.deleted_at IS NULL ${companyId ? 'AND b.company_id = ?' : ''} ORDER BY b.id DESC LIMIT 6`,
+            cParams,
         ),
         query(
             `SELECT p.id, p.payment_no, p.purpose, p.amount, p.status, p.paid_at, p.created_at, c.name AS customer_name
-               FROM tblPayment p JOIN tblCustomer c ON c.id = p.customer_id ORDER BY p.id DESC LIMIT 6`,
+               FROM tblPayment p JOIN tblCustomer c ON c.id = p.customer_id ${companyId ? 'WHERE p.company_id = ?' : ''} ORDER BY p.id DESC LIMIT 6`,
+            cParams,
         ),
         query(
             `SELECT e.id, e.event_code, e.title, e.event_type, e.event_date, e.start_time, e.venue, e.status, c.name AS customer_name,
                     (SELECT COUNT(*) FROM tblEventStaff es WHERE es.event_id = e.id) AS staff_count
-               FROM tblEvent e JOIN tblCustomer c ON c.id = e.customer_id WHERE e.deleted_at IS NULL AND e.event_date >= ? AND e.status IN ('UPCOMING','LIVE')
+               FROM tblEvent e JOIN tblCustomer c ON c.id = e.customer_id WHERE e.deleted_at IS NULL AND e.event_date >= ? AND e.status IN ('UPCOMING','LIVE') ${companyId ? 'AND e.company_id = ?' : ''}
               ORDER BY e.event_date, e.start_time LIMIT 6`,
-            [today.from],
+            companyId ? [today.from, companyId] : [today.from],
         ),
     ]);
 
@@ -112,7 +118,14 @@ export async function dashboard(q: RangeQuery) {
     };
 }
 
-function eventPerformanceRows(range: ResolvedRange, limit: number) {
+function eventPerformanceRows(range: ResolvedRange, limit: number, companyId?: number | null) {
+    const where = ['e.deleted_at IS NULL', 'e.event_date BETWEEN ? AND ?'];
+    const params: unknown[] = [range.from, range.to];
+    if (companyId) {
+        where.push('e.company_id = ?');
+        params.push(companyId);
+    }
+    params.push(limit);
     return query(
         `SELECT e.id, e.event_code, e.title, e.event_date, e.status, c.name AS customer_name,
                 (SELECT COUNT(*) FROM tblPhoto p WHERE p.event_id = e.id AND p.deleted_at IS NULL) AS photos,
@@ -124,9 +137,9 @@ function eventPerformanceRows(range: ResolvedRange, limit: number) {
                 (SELECT COALESCE(SUM(py.amount - py.refunded_amount), 0) FROM tblPayment py JOIN tblOrder o ON o.id = py.order_id WHERE o.event_id = e.id AND py.status IN ${PAID}) +
                 (SELECT COALESCE(SUM(py.amount - py.refunded_amount), 0) FROM tblPayment py WHERE py.booking_id = e.booking_id AND e.booking_id IS NOT NULL AND py.status IN ${PAID}) AS revenue
            FROM tblEvent e JOIN tblCustomer c ON c.id = e.customer_id
-          WHERE e.deleted_at IS NULL AND e.event_date BETWEEN ? AND ?
+          WHERE ${where.join(' AND ')}
           ORDER BY revenue DESC, views DESC LIMIT ?`,
-        [range.from, range.to, limit],
+        params,
     );
 }
 
@@ -146,20 +159,21 @@ export interface ReportResult {
     rows: Record<string, unknown>[];
 }
 
-export async function report(type: ReportType, q: RangeQuery): Promise<ReportResult> {
+export async function report(type: ReportType, q: RangeQuery, companyId?: number | null): Promise<ReportResult> {
     const range = resolveRange(q);
     const b = [range.startUtc, range.endUtc];
+    const cFilter = companyId ? 'AND company_id = ?' : '';
     switch (type) {
         case 'revenue': {
             const [daily, byPurpose, byMethod, totals] = await Promise.all([
                 query<{ day: string; revenue: number; refunds: number; payments: number }>(
                     `SELECT ${localDateSql('paid_at')} AS day, SUM(amount - refunded_amount) AS revenue, SUM(refunded_amount) AS refunds, COUNT(*) AS payments
-                       FROM tblPayment WHERE status IN ${PAID} AND paid_at >= ? AND paid_at < ? GROUP BY day ORDER BY day`,
-                    b,
+                       FROM tblPayment WHERE status IN ${PAID} AND paid_at >= ? AND paid_at < ? ${cFilter} GROUP BY day ORDER BY day`,
+                    companyId ? [...b, companyId] : b,
                 ),
-                query(`SELECT purpose AS label, COUNT(*) AS payments, SUM(amount - refunded_amount) AS amount FROM tblPayment WHERE status IN ${PAID} AND paid_at >= ? AND paid_at < ? GROUP BY purpose ORDER BY amount DESC`, b),
-                query(`SELECT COALESCE(method, provider) AS label, COUNT(*) AS payments, SUM(amount - refunded_amount) AS amount FROM tblPayment WHERE status IN ${PAID} AND paid_at >= ? AND paid_at < ? GROUP BY label ORDER BY amount DESC`, b),
-                queryOne(`SELECT COALESCE(SUM(amount - refunded_amount), 0) AS revenue, COALESCE(SUM(refunded_amount), 0) AS refunds, COUNT(*) AS payments FROM tblPayment WHERE status IN ${PAID} AND paid_at >= ? AND paid_at < ?`, b),
+                query(`SELECT purpose AS label, COUNT(*) AS payments, SUM(amount - refunded_amount) AS amount FROM tblPayment WHERE status IN ${PAID} AND paid_at >= ? AND paid_at < ? ${cFilter} GROUP BY purpose ORDER BY amount DESC`, companyId ? [...b, companyId] : b),
+                query(`SELECT COALESCE(method, provider) AS label, COUNT(*) AS payments, SUM(amount - refunded_amount) AS amount FROM tblPayment WHERE status IN ${PAID} AND paid_at >= ? AND paid_at < ? ${cFilter} GROUP BY label ORDER BY amount DESC`, companyId ? [...b, companyId] : b),
+                queryOne(`SELECT COALESCE(SUM(amount - refunded_amount), 0) AS revenue, COALESCE(SUM(refunded_amount), 0) AS refunds, COUNT(*) AS payments FROM tblPayment WHERE status IN ${PAID} AND paid_at >= ? AND paid_at < ? ${cFilter}`, companyId ? [...b, companyId] : b),
             ]);
             const s = series(range, daily, ['revenue', 'refunds', 'payments']);
             return {
@@ -187,12 +201,12 @@ export async function report(type: ReportType, q: RangeQuery): Promise<ReportRes
                     `SELECT b.booking_no, c.name AS customer_name, c.phone AS customer_phone, b.event_type, b.event_date, b.status, b.source, b.total_amount, b.paid_amount,
                             (b.total_amount - b.paid_amount) AS balance, pk.name AS package_name, b.created_at
                        FROM tblBooking b JOIN tblCustomer c ON c.id = b.customer_id LEFT JOIN tblPackage pk ON pk.id = b.package_id
-                      WHERE b.deleted_at IS NULL AND b.created_at >= ? AND b.created_at < ? ORDER BY b.created_at DESC`,
-                    b,
+                      WHERE b.deleted_at IS NULL AND b.created_at >= ? AND b.created_at < ? ${companyId ? 'AND b.company_id = ?' : ''} ORDER BY b.created_at DESC`,
+                    companyId ? [...b, companyId] : b,
                 ),
-                query('SELECT status AS label, COUNT(*) AS count, SUM(total_amount) AS amount FROM tblBooking WHERE deleted_at IS NULL AND created_at >= ? AND created_at < ? GROUP BY status', b),
-                query('SELECT event_type AS label, COUNT(*) AS count, SUM(total_amount) AS amount FROM tblBooking WHERE deleted_at IS NULL AND created_at >= ? AND created_at < ? GROUP BY event_type ORDER BY count DESC', b),
-                query('SELECT source AS label, COUNT(*) AS count FROM tblBooking WHERE deleted_at IS NULL AND created_at >= ? AND created_at < ? GROUP BY source', b),
+                query(`SELECT status AS label, COUNT(*) AS count, SUM(total_amount) AS amount FROM tblBooking WHERE deleted_at IS NULL AND created_at >= ? AND created_at < ? ${companyId ? 'AND company_id = ?' : ''} GROUP BY status`, companyId ? [...b, companyId] : b),
+                query(`SELECT event_type AS label, COUNT(*) AS count, SUM(total_amount) AS amount FROM tblBooking WHERE deleted_at IS NULL AND created_at >= ? AND created_at < ? ${companyId ? 'AND company_id = ?' : ''} GROUP BY event_type ORDER BY count DESC`, companyId ? [...b, companyId] : b),
+                query(`SELECT source AS label, COUNT(*) AS count FROM tblBooking WHERE deleted_at IS NULL AND created_at >= ? AND created_at < ? ${companyId ? 'AND company_id = ?' : ''} GROUP BY source`, companyId ? [...b, companyId] : b),
             ]);
             const converted = rows.filter((r) => !['ENQUIRY', 'QUOTED', 'CANCELLED'].includes(String(r.status))).length;
             return {
@@ -231,11 +245,11 @@ export async function report(type: ReportType, q: RangeQuery): Promise<ReportRes
                 `SELECT p.payment_no, c.name AS customer_name, p.purpose, p.amount, p.refunded_amount, p.status, p.provider, p.method, p.provider_payment_id,
                         COALESCE(b.booking_no, o.order_no) AS reference, p.failure_reason, p.paid_at, p.created_at
                    FROM tblPayment p JOIN tblCustomer c ON c.id = p.customer_id LEFT JOIN tblBooking b ON b.id = p.booking_id LEFT JOIN tblOrder o ON o.id = p.order_id
-                  WHERE p.created_at >= ? AND p.created_at < ? ORDER BY p.id DESC`,
-                b,
+                  WHERE p.created_at >= ? AND p.created_at < ? ${companyId ? 'AND p.company_id = ?' : ''} ORDER BY p.id DESC`,
+                companyId ? [...b, companyId] : b,
             );
             const sum = (st: string[]) => rows.filter((r) => st.includes(String(r.status))).reduce((s, r) => s + num(r.amount) - num(r.refunded_amount), 0);
-            const byStatus = await query('SELECT status AS label, COUNT(*) AS count, SUM(amount) AS amount FROM tblPayment WHERE created_at >= ? AND created_at < ? GROUP BY status', b);
+            const byStatus = await query(`SELECT status AS label, COUNT(*) AS count, SUM(amount) AS amount FROM tblPayment WHERE created_at >= ? AND created_at < ? ${companyId ? 'AND company_id = ?' : ''} GROUP BY status`, companyId ? [...b, companyId] : b);
             return {
                 type,
                 title: 'Payments report',
@@ -266,7 +280,7 @@ export async function report(type: ReportType, q: RangeQuery): Promise<ReportRes
         }
         case 'events':
         case 'event-performance': {
-            const rows = await eventPerformanceRows(range, 1000);
+            const rows = await eventPerformanceRows(range, 1000, companyId);
             return {
                 type,
                 title: type === 'events' ? 'Events report' : 'Event performance',
@@ -299,20 +313,20 @@ export async function report(type: ReportType, q: RangeQuery): Promise<ReportRes
                 query(
                     `SELECT e.event_code, e.title AS event_title, COUNT(oi.id) AS photos_sold, COUNT(DISTINCT o.customer_id) AS buyers, SUM(oi.total) AS amount
                        FROM tblOrderItem oi JOIN tblOrder o ON o.id = oi.order_id JOIN tblPhoto p ON p.id = oi.photo_id JOIN tblEvent e ON e.id = p.event_id
-                      WHERE oi.item_type = 'PHOTO_DOWNLOAD' AND o.status IN ('PAID','PROCESSING','READY','DELIVERED','COMPLETED') AND o.paid_at >= ? AND o.paid_at < ?
+                      WHERE oi.item_type = 'PHOTO_DOWNLOAD' AND o.status IN ('PAID','PROCESSING','READY','DELIVERED','COMPLETED') AND o.paid_at >= ? AND o.paid_at < ? ${companyId ? 'AND o.company_id = ?' : ''}
                       GROUP BY e.id ORDER BY amount DESC`,
-                    b,
+                    companyId ? [...b, companyId] : b,
                 ),
                 query<{ day: string; photos: number; amount: number }>(
                     `SELECT ${localDateSql('o.paid_at')} AS day, COUNT(oi.id) AS photos, SUM(oi.total) AS amount FROM tblOrderItem oi JOIN tblOrder o ON o.id = oi.order_id
-                      WHERE oi.item_type = 'PHOTO_DOWNLOAD' AND o.status IN ('PAID','PROCESSING','READY','DELIVERED','COMPLETED') AND o.paid_at >= ? AND o.paid_at < ? GROUP BY day`,
-                    b,
+                      WHERE oi.item_type = 'PHOTO_DOWNLOAD' AND o.status IN ('PAID','PROCESSING','READY','DELIVERED','COMPLETED') AND o.paid_at >= ? AND o.paid_at < ? ${companyId ? 'AND o.company_id = ?' : ''} GROUP BY day`,
+                    companyId ? [...b, companyId] : b,
                 ),
                 query(
                     `SELECT p.id AS photo_id, p.file_name AS label, e.title AS event_title, COUNT(*) AS sold FROM tblOrderItem oi JOIN tblOrder o ON o.id = oi.order_id JOIN tblPhoto p ON p.id = oi.photo_id JOIN tblEvent e ON e.id = p.event_id
-                      WHERE oi.item_type = 'PHOTO_DOWNLOAD' AND o.status IN ('PAID','PROCESSING','READY','DELIVERED','COMPLETED') AND o.paid_at >= ? AND o.paid_at < ?
+                      WHERE oi.item_type = 'PHOTO_DOWNLOAD' AND o.status IN ('PAID','PROCESSING','READY','DELIVERED','COMPLETED') AND o.paid_at >= ? AND o.paid_at < ? ${companyId ? 'AND o.company_id = ?' : ''}
                       GROUP BY p.id ORDER BY sold DESC LIMIT 10`,
-                    b,
+                    companyId ? [...b, companyId] : b,
                 ),
             ]);
             return {
@@ -334,12 +348,12 @@ export async function report(type: ReportType, q: RangeQuery): Promise<ReportRes
         }
         case 'downloads': {
             const [daily, rows] = await Promise.all([
-                query<{ day: string; downloads: number }>(`SELECT ${localDateSql('created_at')} AS day, COUNT(*) AS downloads FROM tblDownload WHERE created_at >= ? AND created_at < ? GROUP BY day`, b),
+                query<{ day: string; downloads: number }>(`SELECT ${localDateSql('created_at')} AS day, COUNT(*) AS downloads FROM tblDownload WHERE created_at >= ? AND created_at < ? ${companyId ? 'AND company_id = ?' : ''} GROUP BY day`, companyId ? [...b, companyId] : b),
                 query(
                     `SELECT e.event_code, e.title AS event_title, COUNT(d.id) AS downloads, COUNT(DISTINCT d.photo_id) AS photos, COUNT(DISTINCT d.user_id) AS users,
                             SUM(d.variant = 'EDITED') AS edited_downloads
-                       FROM tblDownload d JOIN tblEvent e ON e.id = d.event_id WHERE d.created_at >= ? AND d.created_at < ? GROUP BY e.id ORDER BY downloads DESC`,
-                    b,
+                       FROM tblDownload d JOIN tblEvent e ON e.id = d.event_id WHERE d.created_at >= ? AND d.created_at < ? ${companyId ? 'AND d.company_id = ?' : ''} GROUP BY e.id ORDER BY downloads DESC`,
+                    companyId ? [...b, companyId] : b,
                 ),
             ]);
             return {
@@ -361,18 +375,18 @@ export async function report(type: ReportType, q: RangeQuery): Promise<ReportRes
         }
         case 'customers': {
             const [daily, rows, bySource] = await Promise.all([
-                query<{ day: string; customers: number }>(`SELECT ${localDateSql('created_at')} AS day, COUNT(*) AS customers FROM tblCustomer WHERE deleted_at IS NULL AND created_at >= ? AND created_at < ? GROUP BY day`, b),
+                query<{ day: string; customers: number }>(`SELECT ${localDateSql('created_at')} AS day, COUNT(*) AS customers FROM tblCustomer WHERE deleted_at IS NULL AND created_at >= ? AND created_at < ? ${companyId ? 'AND company_id = ?' : ''} GROUP BY day`, companyId ? [...b, companyId] : b),
                 query(
                     `SELECT c.name, c.phone, c.email, c.city, c.source, c.created_at,
                             (SELECT COUNT(*) FROM tblBooking bk WHERE bk.customer_id = c.id AND bk.deleted_at IS NULL) AS bookings,
                             (SELECT COUNT(*) FROM tblOrder o WHERE o.customer_id = c.id AND o.status NOT IN ('CREATED','CANCELLED')) AS orders,
                             (SELECT COALESCE(SUM(p.amount - p.refunded_amount), 0) FROM tblPayment p WHERE p.customer_id = c.id AND p.status IN ${PAID} AND p.paid_at >= ? AND p.paid_at < ?) AS spend
-                       FROM tblCustomer c WHERE c.deleted_at IS NULL
+                       FROM tblCustomer c WHERE c.deleted_at IS NULL ${companyId ? 'AND c.company_id = ?' : ''}
                      HAVING spend > 0 OR (c.created_at >= ? AND c.created_at < ?)
                       ORDER BY spend DESC, c.created_at DESC LIMIT 1000`,
-                    [...b, ...b],
+                    companyId ? [...b, companyId, ...b] : [...b, ...b],
                 ),
-                query('SELECT source AS label, COUNT(*) AS count FROM tblCustomer WHERE deleted_at IS NULL AND created_at >= ? AND created_at < ? GROUP BY source', b),
+                query(`SELECT source AS label, COUNT(*) AS count FROM tblCustomer WHERE deleted_at IS NULL AND created_at >= ? AND created_at < ? ${companyId ? 'AND company_id = ?' : ''} GROUP BY source`, companyId ? [...b, companyId] : b),
             ]);
             const s = series(range, daily, ['customers']);
             return {
@@ -406,9 +420,9 @@ export async function report(type: ReportType, q: RangeQuery): Promise<ReportRes
                         (SELECT COUNT(*) FROM tblPrintOrder po WHERE po.assigned_to = u.id AND po.status = 'READY' AND po.completed_at >= ? AND po.completed_at < ?) AS prints,
                         (SELECT COUNT(*) FROM tblDeliveryOrder d WHERE d.assigned_to = u.id AND d.status = 'DELIVERED' AND d.delivered_at >= ? AND d.delivered_at < ?) AS deliveries
                    FROM tblUser u JOIN tblUserRole ur ON ur.user_id = u.id JOIN tblRole r ON r.id = ur.role_id
-                  WHERE u.deleted_at IS NULL AND r.code IN ('PHOTOGRAPHER','EDITOR_DESIGNER','PRINTER_DELIVERY_STAFF','MANAGER')
+                  WHERE u.deleted_at IS NULL AND r.code IN ('PHOTOGRAPHER','EDITOR_DESIGNER','PRINTER_DELIVERY_STAFF','MANAGER') ${companyId ? 'AND u.company_id = ?' : ''}
                   GROUP BY u.id ORDER BY u.name`,
-                [range.from, range.to, ...b, ...b, ...b, ...b],
+                companyId ? [range.from, range.to, ...b, ...b, ...b, ...b, companyId] : [range.from, range.to, ...b, ...b, ...b, ...b],
             );
             return {
                 type,

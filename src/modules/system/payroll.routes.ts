@@ -15,8 +15,8 @@ router.use(authenticate, requirePermission('payments.view', 'staff.manage'));
 
 router.get(
     '/staff',
-    asyncHandler(async (_req, res) => {
-        ok(res, await payroll.listStaffForPayroll());
+    asyncHandler(async (req, res) => {
+        ok(res, await payroll.listStaffForPayroll(req.user?.companyId));
     }),
 );
 
@@ -30,7 +30,7 @@ router.get(
         'query',
     ),
     asyncHandler(async (req, res) => {
-        ok(res, await payroll.listEventShares(req.query.periodMonth as string | undefined, req.query.eventId ? Number(req.query.eventId) : undefined));
+        ok(res, await payroll.listEventShares(req.query.periodMonth as string | undefined, req.query.eventId ? Number(req.query.eventId) : undefined, req.user?.companyId));
     }),
 );
 
@@ -38,7 +38,7 @@ router.get(
     '/earnings',
     validate(z.object({ periodMonth: z.string().regex(/^\d{4}-\d{2}$/) }), 'query'),
     asyncHandler(async (req, res) => {
-        ok(res, await payroll.listEarnings(req.query.periodMonth as string));
+        ok(res, await payroll.listEarnings(req.query.periodMonth as string, req.user?.companyId));
     }),
 );
 
@@ -52,7 +52,7 @@ router.get(
         'query',
     ),
     asyncHandler(async (req, res) => {
-        ok(res, await payroll.listPayroll(req.query as { periodMonth?: string; status?: string }));
+        ok(res, await payroll.listPayroll({ ...(req.query as { periodMonth?: string; status?: string }), companyId: req.user?.companyId }));
     }),
 );
 

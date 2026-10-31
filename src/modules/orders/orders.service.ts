@@ -129,6 +129,7 @@ export async function createOrder(input: OrderInput, user: AuthUser, access: Gal
     const deliveryMethod = physical ? (input.deliveryMethod === 'COURIER' ? 'COURIER' : 'PICKUP') : 'DIGITAL';
     const taxPercent = (await getSetting('pricing')).taxPercent;
 
+    const companyId = user.companyId ?? (await queryOne<{ company_id: number | null }>('SELECT company_id FROM tblCustomer WHERE id = ?', [user.customerId]))?.company_id ?? 1;
     const orderId = await withTransaction(async (conn) => {
         let discount = 0;
         let couponId: number | null = null;
@@ -140,19 +141,19 @@ export async function createOrder(input: OrderInput, user: AuthUser, access: Gal
         const total = subtotal - discount + fee;
         const orderNo = await nextNumber('order', conn);
         const res = await execute(
-            `INSERT INTO tblOrder (order_no, customer_id, event_id, type, subtotal, discount, tax, total, coupon_id, delivery_method, shipping_address, notes)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [orderNo, user.customerId, eventId, input.type, subtotal + fee, discount, inclusiveTax(total, taxPercent), total, couponId, deliveryMethod, json(deliveryMethod === 'COURIER' ? input.shippingAddress : null), input.notes ?? null],
+            `INSERT INTO tblOrder (company_id, order_no, customer_id, event_id, type, subtotal, discount, tax, total, coupon_id, delivery_method, shipping_address, notes)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [companyId, orderNo, user.customerId, eventId, input.type, subtotal + fee, discount, inclusiveTax(total, taxPercent), total, couponId, deliveryMethod, json(deliveryMethod === 'COURIER' ? input.shippingAddress : null), input.notes ?? null],
             conn,
         );
         for (const l of lines) {
             await execute(
-                'INSERT INTO tblOrderItem (order_id, item_type, photo_id, package_id, description, size, quantity, unit_price, total) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                [res.insertId, l.itemType, l.photoId, l.packageId, l.description.slice(0, 255), l.size, l.quantity, l.unitPrice, l.unitPrice * l.quantity],
+                'INSERT INTO tblOrderItem (company_id, order_id, item_type, photo_id, package_id, description, size, quantity, unit_price, total) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                [companyId, res.insertId, l.itemType, l.photoId, l.packageId, l.description.slice(0, 255), l.size, l.quantity, l.unitPrice, l.unitPrice * l.quantity],
                 conn,
             );
         }
-        if (fee) await execute("INSERT INTO tblOrderItem (order_id, item_type, description, quantity, unit_price, total) VALUES (?, ?, 'Courier delivery', 1, ?, ?)", [res.insertId, input.type, fee, fee], conn);
+        if (fee) await execute("INSERT INTO tblOrderItem (company_id, order_id, item_type, description, quantity, unit_price, total) VALUES (?, ?, ?, 'Courier delivery', 1, ?, ?)", [companyId, res.insertId, input.type, fee, fee], conn);
         return res.insertId;
     });
     await audit(ctx, 'ORDER_CREATED', 'orders', orderId, { type: input.type, items: lines.length });
@@ -166,6 +167,7 @@ export interface OrderFilter {
     status?: OrderStatus;
     type?: OrderType;
     customerId?: number;
+    companyId?: number;
     sort?: string;
     order: 'asc' | 'desc';
 }
@@ -173,6 +175,10 @@ export interface OrderFilter {
 export async function listOrders(f: OrderFilter) {
     const where = ['o.deleted_at IS NULL'];
     const params: unknown[] = [];
+    if (f.companyId) {
+        where.push('o.company_id = ?');
+        params.push(f.companyId);
+    }
     if (f.search) {
         where.push('(o.order_no LIKE ? OR c.name LIKE ? OR c.phone LIKE ?)');
         const t = likeTerm(f.search);
@@ -203,6 +209,7 @@ export async function getOrder(id: number, actor?: AuthUser) {
         [id],
     );
     if (!o) throw notFound('Order');
+    if (actor?.companyId && o.company_id && actor.companyId !== o.company_id) throw notFound('Order');
     if (actor && !hasPermission(actor, 'orders.view', 'orders.manage') && actor.customerId !== o.customer_id) throw notFound('Order');
     const [items, payments, prints, delivery, invoice] = await Promise.all([
         query('SELECT oi.*, p.thumb_key FROM tblOrderItem oi LEFT JOIN tblPhoto p ON p.id = oi.photo_id WHERE oi.order_id = ? ORDER BY oi.id', [id]),
@@ -224,8 +231,8 @@ export async function getOrder(id: number, actor?: AuthUser) {
 
 /** Run inside the payment transaction once a payment for this order succeeds. Idempotent. */
 export async function fulfilPaidOrder(orderId: number, conn: PoolConnection): Promise<{ type: OrderType; customerId: number; orderNo: string; photoIds: number[] }> {
-    const o = await queryOne<{ id: number; type: OrderType; status: OrderStatus; customer_id: number; order_no: string; delivery_method: string; shipping_address: unknown; coupon_id: number | null }>(
-        'SELECT id, type, status, customer_id, order_no, delivery_method, shipping_address, coupon_id FROM tblOrder WHERE id = ? FOR UPDATE',
+    const o = await queryOne<{ id: number; type: OrderType; status: OrderStatus; customer_id: number; order_no: string; delivery_method: string; shipping_address: unknown; coupon_id: number | null; company_id: number | null }>(
+        'SELECT id, type, status, customer_id, order_no, delivery_method, shipping_address, coupon_id, company_id FROM tblOrder WHERE id = ? FOR UPDATE',
         [orderId],
         conn,
     );
@@ -240,11 +247,11 @@ export async function fulfilPaidOrder(orderId: number, conn: PoolConnection): Pr
 
     if (['PRINT', 'FRAME', 'CANVAS'].includes(o.type)) {
         for (const i of items.filter((x) => x.photo_id)) {
-            await execute('INSERT INTO tblPrintOrder (order_id, order_item_id, kind, photo_id, size, quantity) VALUES (?, ?, ?, ?, ?, ?)', [orderId, i.id, i.item_type, i.photo_id, i.size, i.quantity], conn);
+            await execute('INSERT INTO tblPrintOrder (company_id, order_id, order_item_id, kind, photo_id, size, quantity) VALUES (?, ?, ?, ?, ?, ?, ?)', [o.company_id ?? 1, orderId, i.id, i.item_type, i.photo_id, i.size, i.quantity], conn);
         }
     }
     if (!digital) {
-        await execute('INSERT IGNORE INTO tblDeliveryOrder (order_id, method, address) VALUES (?, ?, ?)', [orderId, o.delivery_method === 'COURIER' ? 'COURIER' : 'PICKUP', json(o.shipping_address ?? null)], conn);
+        await execute('INSERT IGNORE INTO tblDeliveryOrder (company_id, order_id, method, address) VALUES (?, ?, ?, ?)', [o.company_id ?? 1, orderId, o.delivery_method === 'COURIER' ? 'COURIER' : 'PICKUP', json(o.shipping_address ?? null)], conn);
     }
     return result;
 }
@@ -307,7 +314,9 @@ export async function downloadLink(photoId: number, user: AuthUser, ip: string, 
     const useEdited = !!p.edited_key && ['EDITED', 'APPROVED', 'DELIVERED'].includes(p.status);
     const key = useEdited ? p.edited_key! : p.original_key;
     const name = useEdited ? `${p.file_name.replace(/\.\w+$/, '')}_edited.jpg` : p.file_name;
-    await execute('INSERT INTO tblDownload (photo_id, event_id, user_id, customer_id, order_id, variant, ip, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [
+    const companyId = user.companyId ?? (await queryOne<{ company_id: number | null }>('SELECT company_id FROM tblPhoto WHERE id = ?', [photoId]))?.company_id ?? 1;
+    await execute('INSERT INTO tblDownload (company_id, photo_id, event_id, user_id, customer_id, order_id, variant, ip, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [
+        companyId,
         photoId,
         p.event_id,
         user.id,

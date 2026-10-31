@@ -33,7 +33,7 @@ router.get(
     requirePermission('customers.view', 'customers.manage'),
     validate(pageQuery, 'query'),
     asyncHandler(async (req, res) => {
-        ok(res, await customers.listCustomers(req.query as unknown as PageQuery));
+        ok(res, await customers.listCustomers(req.query as unknown as PageQuery, req.user?.companyId));
     }),
 );
 
@@ -42,7 +42,7 @@ router.get(
     requirePermission('customers.view', 'customers.manage'),
     validate(idParam, 'params'),
     asyncHandler(async (req, res) => {
-        ok(res, await customers.getCustomer(Number(req.params.id)));
+        ok(res, await customers.getCustomer(Number(req.params.id), req.user?.companyId));
     }),
 );
 
@@ -51,7 +51,7 @@ router.post(
     requirePermission('customers.manage', 'events.manage', 'bookings.manage'),
     validate(customerBody),
     asyncHandler(async (req, res) => {
-        created(res, await customers.createCustomer(req.body, auditCtx(req)), 'Customer created');
+        created(res, await customers.createCustomer(req.body, auditCtx(req), req.user?.companyId), 'Customer created');
     }),
 );
 
@@ -61,7 +61,7 @@ router.put(
     validate(idParam, 'params'),
     validate(customerBody),
     asyncHandler(async (req, res) => {
-        ok(res, await customers.updateCustomer(Number(req.params.id), req.body, auditCtx(req)), 'Customer updated');
+        ok(res, await customers.updateCustomer(Number(req.params.id), req.body, auditCtx(req), req.user?.companyId), 'Customer updated');
     }),
 );
 
@@ -90,7 +90,7 @@ router.delete(
     requirePermission('customers.manage'),
     validate(idParam, 'params'),
     asyncHandler(async (req, res) => {
-        await customers.deleteCustomer(Number(req.params.id), auditCtx(req));
+        await customers.deleteCustomer(Number(req.params.id), auditCtx(req), req.user?.companyId);
         ok(res, null, 'Customer deleted');
     }),
 );

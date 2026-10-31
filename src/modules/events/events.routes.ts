@@ -42,7 +42,7 @@ router.get(
     validate(z.object({ date: ymd, start: hhmm, end: hhmm, excludeEventId: z.coerce.number().int().positive().optional(), excludeBookingId: z.coerce.number().int().positive().optional() }), 'query'),
     asyncHandler(async (req, res) => {
         const q = req.query as unknown as { date: string; start?: string | null; end?: string | null; excludeEventId?: number; excludeBookingId?: number };
-        ok(res, await events.checkAvailability({ eventDate: q.date, startTime: q.start, endTime: q.end, excludeEventId: q.excludeEventId, excludeBookingId: q.excludeBookingId }));
+        ok(res, await events.checkAvailability({ eventDate: q.date, startTime: q.start, endTime: q.end, excludeEventId: q.excludeEventId, excludeBookingId: q.excludeBookingId, companyId: req.user?.companyId }));
     }),
 );
 
@@ -58,6 +58,9 @@ router.get(
             if (hasPermission(req.user, 'events.assigned', 'photos.upload', 'photos.edit')) q.assignedTo = req.user!.id;
             else if (req.user!.customerId) q.customerId = req.user!.customerId;
             else throw forbidden();
+        }
+        if (req.user?.companyId) {
+            q.companyId = req.user.companyId;
         }
         ok(res, await events.listEvents(q));
     }),
@@ -83,8 +86,9 @@ router.post(
     requirePermission('events.manage'),
     validate(eventBody),
     asyncHandler(async (req, res) => {
-        const id = await events.createEvent(req.body, auditCtx(req));
-        created(res, await events.getEvent(id), 'Event created');
+        const payload = { ...req.body, companyId: req.user?.companyId };
+        const id = await events.createEvent(payload, auditCtx(req));
+        created(res, await events.getEvent(id, req.user?.companyId), 'Event created');
     }),
 );
 
@@ -97,7 +101,7 @@ router.get(
     asyncHandler(async (req, res) => {
         const id = Number(req.params.id);
         await events.assertEventAccess(req.user!, id, 'view');
-        const event = await events.getEvent(id);
+        const event = await events.getEvent(id, req.user?.companyId);
         if (!hasPermission(req.user, 'events.view', 'events.manage', 'events.assigned')) {
             // Customers see their event without internal staff/revenue detail
             const { staff, revenue, notes, ...rest } = event as Record<string, unknown>;

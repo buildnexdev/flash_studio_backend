@@ -60,7 +60,8 @@ router.get(
     requirePermission('staff.assign', 'events.manage'),
     validate(z.object({ role: roleEnum.optional() }), 'query'),
     asyncHandler(async (req, res) => {
-        ok(res, await users.assignableStaff((req.query as { role?: RoleCode }).role));
+        const companyId = req.user?.roles.includes('SUPER_ADMIN') ? undefined : (req.user?.companyId ?? -1);
+        ok(res, await users.assignableStaff((req.query as { role?: RoleCode }).role, companyId));
     }),
 );
 

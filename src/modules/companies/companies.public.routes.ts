@@ -6,7 +6,7 @@ import { publicFormLimiter } from '../../middleware/rate-limit.js';
 import { validate } from '../../middleware/validate.js';
 import { asyncHandler, ok } from '../../utils/http.js';
 import { email, password, phone } from '../../utils/schemas.js';
-import { COMPANY_MODULES, checkRegistrationPhone, completeCompanySignup, devpayCompanyCheckout, findCompanyDuplicates, startCompanyCheckout } from './companies.service.js';
+import { COMPANY_MODULES, checkRegistrationPhone, completeCompanySignup, createCompanyRequest, devpayCompanyCheckout, findCompanyDuplicates, startCompanyCheckout } from './companies.service.js';
 
 const router = Router();
 const moduleCode = z.enum(['asset', 'staff', 'event', 'report', 'ecommerce']);
@@ -91,6 +91,23 @@ router.post(
     ),
     asyncHandler(async (req, res) => {
         ok(res, await completeCompanySignup(req.body), 'Your company is registered.');
+    }),
+);
+
+router.post(
+    '/request',
+    publicFormLimiter,
+    validate(
+        z.object({
+            companyName: z.string().trim().min(2, 'Enter company name').max(150),
+            phone: z.string().trim().regex(/^\d{10}$/, 'Enter a 10-digit phone number'),
+            email: email,
+            notes: z.string().trim().max(2000).optional().nullable(),
+        }),
+    ),
+    asyncHandler(async (req, res) => {
+        const result = await createCompanyRequest(req.body);
+        ok(res, result, 'Registration request submitted successfully! Our team will contact you soon.');
     }),
 );
 

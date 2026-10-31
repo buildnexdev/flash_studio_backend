@@ -54,14 +54,14 @@ async function packagePricing(packageId: number | null | undefined, quotedAmount
     return { total: Number(pkg.price), advance: Math.round((Number(pkg.price) * Number(pkg.advance_percent)) / 100) };
 }
 
-async function insertBooking(db: PoolConnection, customerId: number, d: BookingDetails, source: 'WEBSITE' | 'ADMIN' | 'CUSTOMER_PORTAL', createdBy: number | null, internalNotes?: string | null) {
+async function insertBooking(db: PoolConnection, customerId: number, d: BookingDetails, source: 'WEBSITE' | 'ADMIN' | 'CUSTOMER_PORTAL', createdBy: number | null, internalNotes?: string | null, companyId?: number | null) {
     const pricing = await packagePricing(d.packageId, d.quotedAmount, db);
     const bookingNo = await nextNumber('booking', db);
     const res = await execute(
-        `INSERT INTO tblBooking (booking_no, customer_id, service_id, package_id, event_type, event_date, start_time, end_time, venue, guests, message, internal_notes,
+        `INSERT INTO tblBooking (company_id, booking_no, customer_id, service_id, package_id, event_type, event_date, start_time, end_time, venue, guests, message, internal_notes,
                                total_amount, advance_amount, source, created_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [bookingNo, customerId, d.serviceId ?? null, d.packageId ?? null, d.eventType, d.eventDate, d.startTime ?? null, d.endTime ?? null, d.venue ?? null, d.guests ?? null, d.message ?? null, internalNotes ?? null, pricing.total, pricing.advance, source, createdBy],
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [companyId ?? null, bookingNo, customerId, d.serviceId ?? null, d.packageId ?? null, d.eventType, d.eventDate, d.startTime ?? null, d.endTime ?? null, d.venue ?? null, d.guests ?? null, d.message ?? null, internalNotes ?? null, pricing.total, pricing.advance, source, createdBy],
         db,
     );
     return { id: res.insertId, bookingNo };
@@ -73,11 +73,12 @@ const futureDate = (ymd: string) => {
 };
 
 /** Public website enquiry (no login). */
-export async function createEnquiry(input: EnquiryInput, ctx: AuditContext) {
+export async function createEnquiry(input: EnquiryInput & { companyId?: number | null }, ctx: AuditContext) {
     futureDate(input.eventDate);
+    const targetCompanyId = input.companyId ?? 1;
     const { id, bookingNo } = await withTransaction(async (conn) => {
-        const customerId = await findOrCreateCustomer({ name: input.name, email: input.email, phone: input.phone, city: input.city, source: 'WEBSITE' }, conn);
-        return insertBooking(conn, customerId, input, 'WEBSITE', null);
+        const customerId = await findOrCreateCustomer({ name: input.name, email: input.email, phone: input.phone, city: input.city, source: 'WEBSITE', companyId: targetCompanyId }, conn);
+        return insertBooking(conn, customerId, input, 'WEBSITE', null, null, targetCompanyId);
     });
     await audit(ctx, 'BOOKING_CREATED', 'bookings', id, { source: 'WEBSITE', bookingNo });
     await notifyStaff(['bookings.manage'], { type: 'BOOKING_RECEIVED', title: 'New enquiry', body: `${input.name} enquired about a ${input.eventType} on ${input.eventDate}.`, link: `/admin/bookings?open=${id}` });
@@ -88,18 +89,20 @@ export async function createEnquiry(input: EnquiryInput, ctx: AuditContext) {
 export async function createCustomerBooking(actor: AuthUser, input: BookingDetails, ctx: AuditContext) {
     if (!actor.customerId) throw forbidden('A customer account is required.');
     futureDate(input.eventDate);
-    const { id, bookingNo } = await withTransaction((conn) => insertBooking(conn, actor.customerId!, input, 'CUSTOMER_PORTAL', actor.id));
+    const companyId = actor.companyId ?? (await queryOne<{ company_id: number | null }>('SELECT company_id FROM tblCustomer WHERE id = ?', [actor.customerId]))?.company_id ?? 1;
+    const { id, bookingNo } = await withTransaction((conn) => insertBooking(conn, actor.customerId!, input, 'CUSTOMER_PORTAL', actor.id, null, companyId));
     await audit(ctx, 'BOOKING_CREATED', 'bookings', id, { source: 'CUSTOMER_PORTAL', bookingNo });
     await notifyStaff(['bookings.manage'], { type: 'BOOKING_RECEIVED', title: 'New booking request', body: `${actor.name} requested a ${input.eventType} on ${input.eventDate}.`, link: `/admin/bookings?open=${id}` });
     return getBooking(id, actor);
 }
 
 /** Staff-created booking for an existing or new customer. */
-export async function createAdminBooking(input: BookingDetails & { customerId: number; internalNotes?: string | null }, actor: AuthUser, ctx: AuditContext) {
+export async function createAdminBooking(input: BookingDetails & { customerId: number; internalNotes?: string | null; companyId?: number | null }, actor: AuthUser, ctx: AuditContext) {
     const { id, bookingNo } = await withTransaction(async (conn) => {
-        const c = await queryOne('SELECT id FROM tblCustomer WHERE id = ? AND deleted_at IS NULL', [input.customerId], conn);
+        const c = await queryOne<{ id: number; company_id: number | null }>('SELECT id, company_id FROM tblCustomer WHERE id = ? AND deleted_at IS NULL', [input.customerId], conn);
         if (!c) throw badRequest('Customer not found.', [{ field: 'customerId', message: 'Not found' }]);
-        return insertBooking(conn, input.customerId, input, 'ADMIN', actor.id, input.internalNotes);
+        const companyId = input.companyId ?? actor.companyId ?? c.company_id ?? 1;
+        return insertBooking(conn, input.customerId, input, 'ADMIN', actor.id, input.internalNotes, companyId);
     });
     await audit(ctx, 'BOOKING_CREATED', 'bookings', id, { source: 'ADMIN', bookingNo });
     return getBooking(id, actor);
@@ -113,6 +116,7 @@ export interface BookingFilter {
     from?: string;
     to?: string;
     customerId?: number;
+    companyId?: number;
     sort?: string;
     order: 'asc' | 'desc';
 }
@@ -120,6 +124,10 @@ export interface BookingFilter {
 export async function listBookings(f: BookingFilter) {
     const where = ['b.deleted_at IS NULL'];
     const params: unknown[] = [];
+    if (f.companyId) {
+        where.push('b.company_id = ?');
+        params.push(f.companyId);
+    }
     if (f.search) {
         where.push('(b.booking_no LIKE ? OR c.name LIKE ? OR c.phone LIKE ? OR c.email LIKE ? OR b.venue LIKE ?)');
         const t = likeTerm(f.search);
@@ -156,6 +164,7 @@ export async function getBooking(id: number, actor?: AuthUser) {
         [id],
     );
     if (!b) throw notFound('Booking');
+    if (actor?.companyId && b.company_id && actor.companyId !== b.company_id) throw notFound('Booking');
     if (actor && !hasPermission(actor, 'bookings.view', 'bookings.manage') && actor.customerId !== b.customer_id) throw notFound('Booking');
     const isStaff = !actor || hasPermission(actor, 'bookings.view', 'bookings.manage');
     const [quotations, payments, event] = await Promise.all([
@@ -180,11 +189,12 @@ export async function getBooking(id: number, actor?: AuthUser) {
 }
 
 export async function updateBooking(id: number, input: BookingDetails & { internalNotes?: string | null; couponCode?: string | null }, actor: AuthUser, ctx: AuditContext) {
-    const b = await queryOne<{ status: BookingStatus; total_amount: number; package_id: number | null }>('SELECT status, total_amount, package_id FROM tblBooking WHERE id = ? AND deleted_at IS NULL', [id]);
+    const b = await queryOne<{ status: BookingStatus; total_amount: number; package_id: number | null; company_id: number | null }>('SELECT status, total_amount, package_id, company_id FROM tblBooking WHERE id = ? AND deleted_at IS NULL', [id]);
     if (!b) throw notFound('Booking');
+    if (actor?.companyId && b.company_id && actor.companyId !== b.company_id) throw notFound('Booking');
     if (['COMPLETED', 'CANCELLED'].includes(b.status)) throw conflict(`A ${b.status.toLowerCase()} booking cannot be edited.`);
     if (['ADVANCE_PENDING', 'CONFIRMED', 'IN_PROGRESS'].includes(b.status)) {
-        await assertSlotFree({ eventDate: input.eventDate, startTime: input.startTime, endTime: input.endTime, excludeBookingId: id });
+        await assertSlotFree({ eventDate: input.eventDate, startTime: input.startTime, endTime: input.endTime, excludeBookingId: id, companyId: actor.companyId ?? b.company_id ?? undefined });
     }
     await withTransaction(async (conn) => {
         await execute(
@@ -212,8 +222,9 @@ export async function updateBooking(id: number, input: BookingDetails & { intern
 }
 
 export async function cancelBooking(id: number, reason: string | null, actor: AuthUser, ctx: AuditContext) {
-    const b = await queryOne<{ status: BookingStatus; customer_id: number; booking_no: string }>('SELECT status, customer_id, booking_no FROM tblBooking WHERE id = ? AND deleted_at IS NULL', [id]);
+    const b = await queryOne<{ status: BookingStatus; customer_id: number; booking_no: string; company_id: number | null }>('SELECT status, customer_id, booking_no, company_id FROM tblBooking WHERE id = ? AND deleted_at IS NULL', [id]);
     if (!b) throw notFound('Booking');
+    if (actor?.companyId && b.company_id && actor.companyId !== b.company_id) throw notFound('Booking');
     const isStaff = hasPermission(actor, 'bookings.manage');
     if (!isStaff && actor.customerId !== b.customer_id) throw notFound('Booking');
     if (!isStaff && !['ENQUIRY', 'QUOTED', 'ADVANCE_PENDING'].includes(b.status)) throw conflict('Please contact the studio to cancel a confirmed booking.');
@@ -231,8 +242,9 @@ export async function cancelBooking(id: number, reason: string | null, actor: Au
 
 /** Final delivery done: booking moves to DELIVERED, or COMPLETED when fully paid. */
 export async function markDelivered(id: number, actor: AuthUser, ctx: AuditContext) {
-    const b = await queryOne<{ status: BookingStatus; total_amount: number; paid_amount: number; customer_id: number; booking_no: string }>('SELECT status, total_amount, paid_amount, customer_id, booking_no FROM tblBooking WHERE id = ? AND deleted_at IS NULL', [id]);
+    const b = await queryOne<{ status: BookingStatus; total_amount: number; paid_amount: number; customer_id: number; booking_no: string; company_id: number | null }>('SELECT status, total_amount, paid_amount, customer_id, booking_no, company_id FROM tblBooking WHERE id = ? AND deleted_at IS NULL', [id]);
     if (!b) throw notFound('Booking');
+    if (actor?.companyId && b.company_id && actor.companyId !== b.company_id) throw notFound('Booking');
     if (!['CONFIRMED', 'IN_PROGRESS'].includes(b.status)) throw conflict(`Cannot mark a ${b.status.toLowerCase()} booking as delivered.`);
     const next = Number(b.paid_amount) >= Number(b.total_amount) ? 'COMPLETED' : 'DELIVERED';
     await execute('UPDATE tblBooking SET status = ? WHERE id = ?', [next, id]);
@@ -270,7 +282,7 @@ export function computeQuotation(items: QuotationInput['items'], discount: numbe
     return { lines, subtotal, discount: disc, tax, total: subtotal - disc + tax };
 }
 
-async function writeQuotation(conn: PoolConnection, quotationId: number, bookingId: number, input: QuotationInput) {
+async function writeQuotation(conn: PoolConnection, quotationId: number, bookingId: number, input: QuotationInput, companyId?: number | null) {
     let discount = input.discount;
     let couponId: number | null = null;
     const base = computeQuotation(input.items, 0, 0);
@@ -289,18 +301,20 @@ async function writeQuotation(conn: PoolConnection, quotationId: number, booking
     );
     await execute('DELETE FROM tblQuotationItem WHERE quotation_id = ?', [quotationId], conn);
     let i = 0;
-    for (const l of q.lines) await execute('INSERT INTO tblQuotationItem (quotation_id, description, quantity, unit_price, total, sort_order) VALUES (?, ?, ?, ?, ?, ?)', [quotationId, l.description, l.quantity, l.unitPrice, l.total, i++], conn);
+    for (const l of q.lines) await execute('INSERT INTO tblQuotationItem (company_id, quotation_id, description, quantity, unit_price, total, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)', [companyId ?? null, quotationId, l.description, l.quantity, l.unitPrice, l.total, i++], conn);
     if (couponId) await execute('UPDATE tblBooking SET coupon_id = ? WHERE id = ?', [couponId, bookingId], conn);
 }
 
 export async function createQuotation(bookingId: number, input: QuotationInput, actor: AuthUser, ctx: AuditContext) {
-    const b = await queryOne<{ status: BookingStatus }>('SELECT status FROM tblBooking WHERE id = ? AND deleted_at IS NULL', [bookingId]);
+    const b = await queryOne<{ status: BookingStatus; company_id: number | null }>('SELECT status, company_id FROM tblBooking WHERE id = ? AND deleted_at IS NULL', [bookingId]);
     if (!b) throw notFound('Booking');
+    if (actor?.companyId && b.company_id && actor.companyId !== b.company_id) throw notFound('Booking');
     if (!['ENQUIRY', 'QUOTED', 'ADVANCE_PENDING'].includes(b.status)) throw conflict('Quotations can only be created before the booking is confirmed.');
+    const companyId = actor.companyId ?? b.company_id ?? 1;
     const id = await withTransaction(async (conn) => {
         const no = await nextNumber('quotation', conn);
-        const res = await execute('INSERT INTO tblQuotation (quotation_no, booking_id, created_by) VALUES (?, ?, ?)', [no, bookingId, actor.id], conn);
-        await writeQuotation(conn, res.insertId, bookingId, input);
+        const res = await execute('INSERT INTO tblQuotation (company_id, quotation_no, booking_id, created_by) VALUES (?, ?, ?, ?)', [companyId, no, bookingId, actor.id], conn);
+        await writeQuotation(conn, res.insertId, bookingId, input, companyId);
         return res.insertId;
     });
     await audit(ctx, 'QUOTATION_CREATED', 'bookings', bookingId, { quotationId: id });
@@ -316,7 +330,9 @@ async function loadQuotation(id: number, db: Db = pool) {
 export async function updateQuotation(id: number, input: QuotationInput, actor: AuthUser, ctx: AuditContext) {
     const q = await loadQuotation(id);
     if (!['DRAFT', 'SENT'].includes(q.status)) throw conflict(`A ${q.status.toLowerCase()} quotation cannot be edited.`);
-    await withTransaction((conn) => writeQuotation(conn, id, q.booking_id, input));
+    const b = await queryOne<{ company_id: number | null }>('SELECT company_id FROM tblBooking WHERE id = ?', [q.booking_id]);
+    if (actor?.companyId && b?.company_id && actor.companyId !== b.company_id) throw notFound('Quotation');
+    await withTransaction((conn) => writeQuotation(conn, id, q.booking_id, input, actor.companyId ?? b?.company_id ?? 1));
     await audit(ctx, 'QUOTATION_UPDATED', 'bookings', q.booking_id, { quotationId: id });
     return getBooking(q.booking_id, actor);
 }
@@ -409,23 +425,25 @@ export async function quotationPdf(id: number, actor: AuthUser) {
 export async function reviseQuotation(id: number, note: string | null, actor: AuthUser, ctx: AuditContext) {
     const q = await loadQuotation(id);
     if (!['SENT', 'REJECTED'].includes(q.status)) throw conflict('Only a sent or declined quotation can be revised.');
-    const booking = await queryOne<{ status: BookingStatus }>('SELECT status FROM tblBooking WHERE id = ? AND deleted_at IS NULL', [q.booking_id]);
+    const booking = await queryOne<{ status: BookingStatus; company_id: number | null }>('SELECT status, company_id FROM tblBooking WHERE id = ? AND deleted_at IS NULL', [q.booking_id]);
     if (!booking || !['ENQUIRY', 'QUOTED', 'ADVANCE_PENDING'].includes(booking.status)) throw conflict('This booking can no longer take a new quotation.');
+    if (actor?.companyId && booking.company_id && actor.companyId !== booking.company_id) throw notFound('Quotation');
     const source = await queryOne<{ revision: number; subtotal: number; discount: number; tax_percent: number; tax: number; total: number; advance_amount: number; valid_until: string | null; notes: string | null; terms: string | null }>(
         'SELECT revision, subtotal, discount, tax_percent, tax, total, advance_amount, valid_until, notes, terms FROM tblQuotation WHERE id = ?',
         [id],
     );
     const items = await query<{ description: string; quantity: number; unit_price: number; total: number; sort_order: number }>('SELECT description, quantity, unit_price, total, sort_order FROM tblQuotationItem WHERE quotation_id = ? ORDER BY sort_order, id', [id]);
+    const companyId = actor.companyId ?? booking.company_id ?? 1;
     const nextId = await withTransaction(async (conn) => {
         const no = await nextNumber('quotation', conn);
         const res = await execute(
-            `INSERT INTO tblQuotation (quotation_no, booking_id, revision, revises_id, revision_note, status, subtotal, discount, tax_percent, tax, total, advance_amount, valid_until, notes, terms, created_by)
-             VALUES (?, ?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [no, q.booking_id, Number(source?.revision ?? 1) + 1, id, note, source?.subtotal ?? 0, source?.discount ?? 0, source?.tax_percent ?? 0, source?.tax ?? 0, source?.total ?? 0, source?.advance_amount ?? 0, source?.valid_until ?? null, source?.notes ?? null, source?.terms ?? null, actor.id],
+            `INSERT INTO tblQuotation (company_id, quotation_no, booking_id, revision, revises_id, revision_note, status, subtotal, discount, tax_percent, tax, total, advance_amount, valid_until, notes, terms, created_by)
+             VALUES (?, ?, ?, ?, ?, ?, 'DRAFT', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [companyId, no, q.booking_id, Number(source?.revision ?? 1) + 1, id, note, source?.subtotal ?? 0, source?.discount ?? 0, source?.tax_percent ?? 0, source?.tax ?? 0, source?.total ?? 0, source?.advance_amount ?? 0, source?.valid_until ?? null, source?.notes ?? null, source?.terms ?? null, actor.id],
             conn,
         );
         for (const item of items) {
-            await execute('INSERT INTO tblQuotationItem (quotation_id, description, quantity, unit_price, total, sort_order) VALUES (?, ?, ?, ?, ?, ?)', [res.insertId, item.description, item.quantity, item.unit_price, item.total, item.sort_order], conn);
+            await execute('INSERT INTO tblQuotationItem (company_id, quotation_id, description, quantity, unit_price, total, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)', [companyId, res.insertId, item.description, item.quantity, item.unit_price, item.total, item.sort_order], conn);
         }
         return res.insertId;
     });
@@ -439,8 +457,9 @@ export async function reviseQuotation(id: number, note: string | null, actor: Au
  */
 export async function respondQuotation(id: number, decision: 'ACCEPT' | 'REJECT', actor: AuthUser, ctx: AuditContext) {
     const q = await loadQuotation(id);
-    const b = await queryOne<{ id: number; customer_id: number; status: BookingStatus; paid_amount: number; booking_no: string }>('SELECT id, customer_id, status, paid_amount, booking_no FROM tblBooking WHERE id = ?', [q.booking_id]);
+    const b = await queryOne<{ id: number; customer_id: number; status: BookingStatus; paid_amount: number; booking_no: string; company_id: number | null }>('SELECT id, customer_id, status, paid_amount, booking_no, company_id FROM tblBooking WHERE id = ?', [q.booking_id]);
     if (!b) throw notFound('Booking');
+    if (actor?.companyId && b.company_id && actor.companyId !== b.company_id) throw notFound('Quotation');
     const isStaff = hasPermission(actor, 'bookings.manage');
     if (!isStaff && actor.customerId !== b.customer_id) throw notFound('Quotation');
     if (q.status !== 'SENT') throw conflict('This quotation is not awaiting a response.');
@@ -449,8 +468,8 @@ export async function respondQuotation(id: number, decision: 'ACCEPT' | 'REJECT'
         throw conflict('This quotation has expired. Please ask the studio for a new one.');
     }
     if (decision === 'ACCEPT') {
-        const slot = await queryOne<{ event_date: string; start_time: string | null; end_time: string | null }>('SELECT event_date, start_time, end_time FROM tblBooking WHERE id = ?', [q.booking_id]);
-        if (slot) await assertSlotFree({ eventDate: String(slot.event_date).slice(0, 10), startTime: slot.start_time, endTime: slot.end_time, excludeBookingId: q.booking_id });
+        const slot = await queryOne<{ event_date: string; start_time: string | null; end_time: string | null; company_id: number | null }>('SELECT event_date, start_time, end_time, company_id FROM tblBooking WHERE id = ?', [q.booking_id]);
+        if (slot) await assertSlotFree({ eventDate: String(slot.event_date).slice(0, 10), startTime: slot.start_time, endTime: slot.end_time, excludeBookingId: q.booking_id, companyId: actor.companyId ?? slot.company_id ?? undefined });
     }
 
     let confirmed = false;

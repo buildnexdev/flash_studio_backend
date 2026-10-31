@@ -6,7 +6,8 @@ import jwt from 'jsonwebtoken';
 import { config } from '../config/env.js';
 import { applyPageRules, matchPageRequest, type PageRule } from '../config/pages.js';
 import { ROLE_LEVEL, primaryRole, type Permission, type RoleCode } from '../config/rbac.js';
-import { currentDatabaseKey, query, queryOne } from '../db/pool.js';
+import { currentDatabaseKey, currentStudioSlug, query, queryOne, runInTenant } from '../db/pool.js';
+import { resolveTenant } from '../modules/companies/companies.service.js';
 import { forbidden, unauthorized } from '../utils/errors.js';
 
 export interface AuthUser {
@@ -100,6 +101,16 @@ export async function userFromAccessToken(token: string): Promise<AuthUser | nul
     try {
         const payload = jwt.verify(token, config.JWT_SECRET, { issuer: 'photolab' }) as AccessPayload;
         if (payload.typ !== 'access') return null;
+        if (payload.sid && !currentStudioSlug()) {
+            const scope = await resolveTenant(payload.sid).catch(() => null);
+            if (scope) {
+                return runInTenant(scope, async () => {
+                    const user = await loadAuthUser(Number(payload.sub));
+                    if (!user || user.tokenVersion !== payload.tv) return null;
+                    return user;
+                });
+            }
+        }
         const user = await loadAuthUser(Number(payload.sub));
         if (!user || user.tokenVersion !== payload.tv) return null;
         return user;
@@ -117,6 +128,13 @@ function bearer(req: Request): string | null {
 export async function authenticate(req: Request, _res: Response, next: NextFunction): Promise<void> {
     const token = bearer(req);
     if (!token) return next(unauthorized());
+    const payload = jwt.decode(token) as AccessPayload | null;
+    if (payload?.sid && !currentStudioSlug()) {
+        const scope = await resolveTenant(payload.sid).catch(() => null);
+        if (scope) {
+            return runInTenant(scope, () => authenticate(req, _res, next));
+        }
+    }
     const user = await userFromAccessToken(token).catch(() => null);
     if (!user) return next(unauthorized('Your session has expired. Please sign in again.'));
     req.user = user;
@@ -131,6 +149,13 @@ export async function authenticate(req: Request, _res: Response, next: NextFunct
 export async function optionalAuth(req: Request, _res: Response, next: NextFunction): Promise<void> {
     const token = bearer(req);
     if (token) {
+        const payload = jwt.decode(token) as AccessPayload | null;
+        if (payload?.sid && !currentStudioSlug()) {
+            const scope = await resolveTenant(payload.sid).catch(() => null);
+            if (scope) {
+                return runInTenant(scope, () => optionalAuth(req, _res, next));
+            }
+        }
         const user = await userFromAccessToken(token).catch(() => null);
         if (user) req.user = user;
     }

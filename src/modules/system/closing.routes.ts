@@ -18,14 +18,14 @@ router.get(
     validate(z.object({ date: ymd.optional() }), 'query'),
     asyncHandler(async (req, res) => {
         const date = (req.query.date as string) || new Date().toISOString().slice(0, 10);
-        ok(res, await closing.previewEndOfDay(date));
+        ok(res, await closing.previewEndOfDay(date, req.user?.companyId));
     }),
 );
 
 router.get(
     '/day/history',
-    asyncHandler(async (_req, res) => {
-        ok(res, await closing.listEndOfDay());
+    asyncHandler(async (req, res) => {
+        ok(res, await closing.listEndOfDay(31, req.user?.companyId));
     }),
 );
 
@@ -51,14 +51,14 @@ router.get(
     asyncHandler(async (req, res) => {
         const now = new Date();
         const periodMonth = (req.query.periodMonth as string) || `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
-        ok(res, await closing.previewEndOfMonth(periodMonth));
+        ok(res, await closing.previewEndOfMonth(periodMonth, req.user?.companyId));
     }),
 );
 
 router.get(
     '/month/history',
-    asyncHandler(async (_req, res) => {
-        ok(res, await closing.listEndOfMonth());
+    asyncHandler(async (req, res) => {
+        ok(res, await closing.listEndOfMonth(24, req.user?.companyId));
     }),
 );
 
