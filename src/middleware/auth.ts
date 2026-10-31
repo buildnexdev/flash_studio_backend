@@ -84,7 +84,8 @@ export async function loadAuthUser(userId: number): Promise<AuthUser | null> {
       LEFT JOIN tblUserRole ur ON ur.user_id = u.id
       LEFT JOIN tblCompany comp ON comp.companyID = COALESCE(u.company_id, ur.company_id)
       LEFT JOIN tblCompany comp_owner ON (u.email IS NOT NULL AND (comp_owner.owner_email = u.email OR comp_owner.email = u.email))
-                                       OR (u.phone IS NOT NULL AND comp_owner.phone = u.phone)
+                                       OR (u.phone IS NOT NULL AND comp_owner.phone IS NOT NULL AND RIGHT(REPLACE(comp_owner.phone, ' ', ''), 10) = RIGHT(REPLACE(u.phone, ' ', ''), 10))
+                                       OR (u.name IS NOT NULL AND comp_owner.owner_name IS NOT NULL AND LOWER(TRIM(comp_owner.owner_name)) = LOWER(TRIM(u.name)))
       LEFT JOIN tblStaff staff ON staff.user_id = u.id
       LEFT JOIN tblCompany staff_comp ON staff_comp.companyID = staff.company_id
       LEFT JOIN tblCustomer c ON c.user_id = u.id AND c.deleted_at IS NULL
