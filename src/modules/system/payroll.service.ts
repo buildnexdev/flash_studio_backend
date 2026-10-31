@@ -19,7 +19,20 @@ function assertMonth(m: string) {
     if (!/^\d{4}-\d{2}$/.test(m)) throw badRequest('Use period as YYYY-MM');
 }
 
-export async function listStaffForPayroll() {
+export async function listStaffForPayroll(companyId?: number | null) {
+    const where: string[] = [
+        'u.deleted_at IS NULL',
+        "u.status = 'ACTIVE'",
+        `EXISTS (
+            SELECT 1 FROM tblUserRole ur JOIN tblRole r ON r.id = ur.role_id
+             WHERE ur.user_id = u.id AND r.code <> 'CUSTOMER'
+        )`,
+    ];
+    const params: unknown[] = [];
+    if (companyId) {
+        where.push('u.company_id = ?');
+        params.push(companyId);
+    }
     return query(
         `SELECT u.id, u.name, u.email, u.phone, u.status,
                 (SELECT GROUP_CONCAT(r.code ORDER BY r.id) FROM tblUserRole ur JOIN tblRole r ON r.id = ur.role_id WHERE ur.user_id = u.id) AS role,
@@ -31,17 +44,13 @@ export async function listStaffForPayroll() {
            FROM tblUser u
            LEFT JOIN tblStaff s ON s.user_id = u.id
            LEFT JOIN tblPhotographer p ON p.user_id = u.id
-          WHERE u.deleted_at IS NULL
-            AND u.status = 'ACTIVE'
-            AND EXISTS (
-                SELECT 1 FROM tblUserRole ur JOIN tblRole r ON r.id = ur.role_id
-                 WHERE ur.user_id = u.id AND r.code <> 'CUSTOMER'
-            )
+          WHERE ${where.join(' AND ')}
           ORDER BY u.name`,
+        params,
     );
 }
 
-export async function listPayroll(options: { periodMonth?: string; status?: string } = {}) {
+export async function listPayroll(options: { periodMonth?: string; status?: string; companyId?: number | null } = {}) {
     const where: string[] = [];
     const params: unknown[] = [];
     if (options.periodMonth) {
@@ -52,6 +61,10 @@ export async function listPayroll(options: { periodMonth?: string; status?: stri
     if (options.status) {
         where.push('pe.status = ?');
         params.push(options.status);
+    }
+    if (options.companyId) {
+        where.push('pe.company_id = ?');
+        params.push(options.companyId);
     }
     const sqlWhere = where.length ? `WHERE ${where.join(' AND ')}` : '';
     const rows = await query(
@@ -65,14 +78,25 @@ export async function listPayroll(options: { periodMonth?: string; status?: stri
           ORDER BY pe.period_month DESC, pe.id DESC`,
         params,
     );
+    const sumWhere: string[] = [];
+    const sumParams: unknown[] = [];
+    if (options.periodMonth) {
+        sumWhere.push('period_month = ?');
+        sumParams.push(options.periodMonth);
+    }
+    if (options.companyId) {
+        sumWhere.push('company_id = ?');
+        sumParams.push(options.companyId);
+    }
+    const sumSqlWhere = sumWhere.length ? `WHERE ${sumWhere.join(' AND ')}` : '';
     const summary = await queryOne<{ draft: number; paid: number; total_paid: number }>(
         `SELECT
             COALESCE(SUM(CASE WHEN status = 'DRAFT' THEN amount ELSE 0 END), 0) AS draft,
             COALESCE(SUM(CASE WHEN status = 'PAID' THEN amount ELSE 0 END), 0) AS paid,
             COALESCE(SUM(CASE WHEN status = 'PAID' THEN amount ELSE 0 END), 0) AS total_paid
            FROM tblPayrollEntry
-           ${options.periodMonth ? 'WHERE period_month = ?' : ''}`,
-        options.periodMonth ? [options.periodMonth] : [],
+           ${sumSqlWhere}`,
+        sumParams,
     );
     return { items: rows, summary: { draft: Number(summary?.draft ?? 0), paid: Number(summary?.paid ?? 0), totalPaid: Number(summary?.total_paid ?? 0) } };
 }
@@ -89,11 +113,13 @@ export async function createPayroll(input: PayrollInput, ctx: AuditContext) {
     if (open) throw conflict('A payroll entry already exists for this staff member in that month.');
 
     const payrollNo = await nextNumber('payroll');
+    const companyId = ctx.companyId ?? 1;
     const id = (
         await execute(
-            `INSERT INTO tblPayrollEntry (payroll_no, staff_user_id, period_month, amount, pay_type, commission_pct, status, notes, created_by)
-             VALUES (?, ?, ?, ?, ?, ?, 'DRAFT', ?, ?)`,
+            `INSERT INTO tblPayrollEntry (company_id, payroll_no, staff_user_id, period_month, amount, pay_type, commission_pct, status, notes, created_by)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 'DRAFT', ?, ?)`,
             [
+                companyId,
                 payrollNo,
                 input.staffUserId,
                 input.periodMonth,
@@ -106,10 +132,16 @@ export async function createPayroll(input: PayrollInput, ctx: AuditContext) {
         )
     ).insertId;
     await audit(ctx, 'PAYROLL_CREATED', 'finance', id, { payrollNo, periodMonth: input.periodMonth });
-    return getPayroll(id);
+    return getPayroll(id, companyId);
 }
 
-export async function getPayroll(id: number) {
+export async function getPayroll(id: number, companyId?: number | null) {
+    const where: string[] = ['pe.id = ?'];
+    const params: unknown[] = [id];
+    if (companyId) {
+        where.push('pe.company_id = ?');
+        params.push(companyId);
+    }
     const row = await queryOne(
         `SELECT pe.*, u.name AS staff_name, u.email AS staff_email,
                 (SELECT GROUP_CONCAT(r.code ORDER BY r.id) FROM tblUserRole ur JOIN tblRole r ON r.id = ur.role_id WHERE ur.user_id = u.id) AS staff_role,
@@ -117,33 +149,45 @@ export async function getPayroll(id: number) {
            FROM tblPayrollEntry pe
            JOIN tblUser u ON u.id = pe.staff_user_id
            LEFT JOIN tblStaff s ON s.user_id = u.id
-          WHERE pe.id = ?`,
-        [id],
+          WHERE ${where.join(' AND ')}`,
+        params,
     );
     if (!row) throw notFound('Payroll entry');
     return row;
 }
 
 export async function markPayrollPaid(id: number, ctx: AuditContext) {
-    const row = await queryOne<{ id: number; status: string }>('SELECT id, status FROM tblPayrollEntry WHERE id = ?', [id]);
+    const where: string[] = ['id = ?'];
+    const params: unknown[] = [id];
+    if (ctx.companyId) {
+        where.push('company_id = ?');
+        params.push(ctx.companyId);
+    }
+    const row = await queryOne<{ id: number; status: string }>(`SELECT id, status FROM tblPayrollEntry WHERE ${where.join(' AND ')}`, params);
     if (!row) throw notFound('Payroll entry');
     if (row.status === 'PAID') throw conflict('Already marked as paid.');
     if (row.status === 'CANCELLED') throw badRequest('Cancelled payroll cannot be paid.');
     await execute("UPDATE tblPayrollEntry SET status = 'PAID', paid_at = UTC_TIMESTAMP() WHERE id = ?", [id]);
     await audit(ctx, 'PAYROLL_PAID', 'finance', id);
-    return getPayroll(id);
+    return getPayroll(id, ctx.companyId);
 }
 
 export async function cancelPayroll(id: number, ctx: AuditContext) {
-    const row = await queryOne<{ id: number; status: string }>('SELECT id, status FROM tblPayrollEntry WHERE id = ?', [id]);
+    const where: string[] = ['id = ?'];
+    const params: unknown[] = [id];
+    if (ctx.companyId) {
+        where.push('company_id = ?');
+        params.push(ctx.companyId);
+    }
+    const row = await queryOne<{ id: number; status: string }>(`SELECT id, status FROM tblPayrollEntry WHERE ${where.join(' AND ')}`, params);
     if (!row) throw notFound('Payroll entry');
     if (row.status === 'PAID') throw badRequest('Paid payroll cannot be cancelled. Create an adjustment instead.');
     await execute("UPDATE tblPayrollEntry SET status = 'CANCELLED' WHERE id = ?", [id]);
     await audit(ctx, 'PAYROLL_CANCELLED', 'finance', id);
-    return getPayroll(id);
+    return getPayroll(id, ctx.companyId);
 }
 
-export async function listEventShares(periodMonth?: string, eventId?: number) {
+export async function listEventShares(periodMonth?: string, eventId?: number, companyId?: number | null) {
     const where: string[] = ['e.deleted_at IS NULL'];
     const params: unknown[] = [];
     if (periodMonth) {
@@ -154,6 +198,10 @@ export async function listEventShares(periodMonth?: string, eventId?: number) {
     if (eventId) {
         where.push('e.id = ?');
         params.push(eventId);
+    }
+    if (companyId) {
+        where.push('e.company_id = ?');
+        params.push(companyId);
     }
     return query(
         `SELECT es.id, es.event_id, es.user_id AS staff_user_id, es.role, es.pay_basis, es.share_pct, es.commission_pct,
@@ -184,23 +232,29 @@ export async function listEventShares(periodMonth?: string, eventId?: number) {
     );
 }
 
-export async function listEarnings(periodMonth: string) {
+export async function listEarnings(periodMonth: string, companyId?: number | null) {
     assertMonth(periodMonth);
+    const where: string[] = ['se.period_month = ?'];
+    const params: unknown[] = [periodMonth];
+    if (companyId) {
+        where.push('se.company_id = ?');
+        params.push(companyId);
+    }
     return query(
         `SELECT se.*, u.name AS staff_name, e.title AS event_title, e.event_code
            FROM tblStaffEarning se
            JOIN tblUser u ON u.id = se.staff_user_id
            LEFT JOIN tblEvent e ON e.id = se.event_id
-          WHERE se.period_month = ?
+          WHERE ${where.join(' AND ')}
           ORDER BY se.earning_date DESC, se.id DESC`,
-        [periodMonth],
+        params,
     );
 }
 
 /** Build earnings from event team shares for a month, then create draft payroll per staff. */
 export async function generateFromEvents(periodMonth: string, ctx: AuditContext) {
     assertMonth(periodMonth);
-    const shares = (await listEventShares(periodMonth)) as {
+    const shares = (await listEventShares(periodMonth, undefined, ctx.companyId)) as {
         id: number;
         event_id: number;
         staff_user_id: number;
@@ -220,6 +274,7 @@ export async function generateFromEvents(periodMonth: string, ctx: AuditContext)
     let createdEarnings = 0;
     let createdPayroll = 0;
     const byStaff = new Map<number, { amount: number; types: Set<string> }>();
+    const companyId = ctx.companyId ?? 1;
 
     for (const s of shares) {
         if (s.pay_basis === 'NONE' || s.payout_status === 'WAIVED' || s.payout_status === 'PAID') continue;
@@ -236,9 +291,10 @@ export async function generateFromEvents(periodMonth: string, ctx: AuditContext)
         const ratePct = s.pay_basis === 'SHARE' ? s.share_pct : s.pay_basis === 'COMMISSION' ? s.commission_pct : null;
         await execute(
             `INSERT INTO tblStaffEarning
-             (staff_user_id, event_id, event_staff_id, earning_date, period_month, type, base_amount, rate_pct, amount, notes, created_by)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             (company_id, staff_user_id, event_id, event_staff_id, earning_date, period_month, type, base_amount, rate_pct, amount, notes, created_by)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
+                companyId,
                 s.staff_user_id,
                 s.event_id,
                 s.id,
@@ -262,38 +318,40 @@ export async function generateFromEvents(periodMonth: string, ctx: AuditContext)
 
     for (const [staffUserId, agg] of byStaff) {
         const open = await queryOne(
-            "SELECT id, amount FROM tblPayrollEntry WHERE staff_user_id = ? AND period_month = ? AND status = 'DRAFT'",
-            [staffUserId, periodMonth],
+            "SELECT id, amount FROM tblPayrollEntry WHERE staff_user_id = ? AND period_month = ? AND status = 'DRAFT' AND company_id = ?",
+            [staffUserId, periodMonth, companyId],
         );
         const payType = agg.types.size > 1 ? 'MIXED' : ([...agg.types][0] as PayrollInput['payType']) ?? 'MIXED';
         if (open) {
             await execute('UPDATE tblPayrollEntry SET amount = amount + ?, pay_type = ? WHERE id = ?', [agg.amount, payType, open.id]);
-            await execute('UPDATE tblStaffEarning SET payroll_entry_id = ? WHERE staff_user_id = ? AND period_month = ? AND payroll_entry_id IS NULL', [
+            await execute('UPDATE tblStaffEarning SET payroll_entry_id = ? WHERE staff_user_id = ? AND period_month = ? AND payroll_entry_id IS NULL AND company_id = ?', [
                 open.id,
                 staffUserId,
                 periodMonth,
+                companyId,
             ]);
         } else {
             const cancelled = await queryOne(
-                "SELECT id FROM tblPayrollEntry WHERE staff_user_id = ? AND period_month = ? AND status = 'PAID'",
-                [staffUserId, periodMonth],
+                "SELECT id FROM tblPayrollEntry WHERE staff_user_id = ? AND period_month = ? AND status = 'PAID' AND company_id = ?",
+                [staffUserId, periodMonth, companyId],
             );
             if (cancelled) continue;
             const entry = await createPayroll(
                 { staffUserId, periodMonth, amount: agg.amount, payType: payType === 'SALARY' ? 'MIXED' : payType, notes: `Auto from event commissions · ${periodMonth}` },
                 ctx,
             );
-            await execute('UPDATE tblStaffEarning SET payroll_entry_id = ? WHERE staff_user_id = ? AND period_month = ? AND payroll_entry_id IS NULL', [
+            await execute('UPDATE tblStaffEarning SET payroll_entry_id = ? WHERE staff_user_id = ? AND period_month = ? AND payroll_entry_id IS NULL AND company_id = ?', [
                 (entry as { id: number }).id,
                 staffUserId,
                 periodMonth,
+                companyId,
             ]);
             createdPayroll += 1;
         }
     }
 
     await audit(ctx, 'PAYROLL_GENERATED', 'finance', null, { periodMonth, createdEarnings, createdPayroll });
-    return { createdEarnings, createdPayroll, payroll: await listPayroll({ periodMonth }), earnings: await listEarnings(periodMonth) };
+    return { createdEarnings, createdPayroll, payroll: await listPayroll({ periodMonth, companyId: ctx.companyId }), earnings: await listEarnings(periodMonth, ctx.companyId) };
 }
 
 export async function updateEventShare(
@@ -307,7 +365,10 @@ export async function updateEventShare(
     },
     ctx: AuditContext,
 ) {
-    const row = await queryOne<{ id: number; event_id: number }>('SELECT id, event_id FROM tblEventStaff WHERE id = ?', [assignmentId]);
+    const row = await queryOne<{ id: number; event_id: number }>(
+        `SELECT es.id, es.event_id FROM tblEventStaff es JOIN tblEvent e ON e.id = es.event_id WHERE es.id = ? ${ctx.companyId ? 'AND e.company_id = ?' : ''}`,
+        ctx.companyId ? [assignmentId, ctx.companyId] : [assignmentId],
+    );
     if (!row) throw notFound('Assignment');
     if (input.payBasis === 'SHARE' && (input.sharePct == null || input.sharePct < 0 || input.sharePct > 100)) {
         throw badRequest('Share % must be between 0 and 100');
@@ -327,5 +388,5 @@ export async function updateEventShare(
         ],
     );
     await audit(ctx, 'EVENT_SHARE_UPDATED', 'events', row.event_id, { assignmentId, ...input });
-    return listEventShares(undefined, row.event_id);
+    return listEventShares(undefined, row.event_id, ctx.companyId);
 }

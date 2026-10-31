@@ -155,7 +155,7 @@ export interface UploadResult {
 export async function uploadPhotos(files: Express.Multer.File[], meta: UploadMeta, actor: AuthUser, ctx: AuditContext): Promise<UploadResult[]> {
     if (!files.length) throw badRequest('Choose at least one photo.', [{ field: 'files', message: 'Required' }]);
     await assertEventAccess(actor, meta.eventId, 'work');
-    const event = await queryOne<{ id: number; status: string }>('SELECT id, status FROM tblEvent WHERE id = ? AND deleted_at IS NULL', [meta.eventId]);
+    const event = await queryOne<{ id: number; status: string; company_id: number | null }>('SELECT id, status, company_id FROM tblEvent WHERE id = ? AND deleted_at IS NULL', [meta.eventId]);
     if (!event) throw notFound('Event');
     const isManager = hasPermission(actor, 'photos.manage', 'events.manage');
     if (event.status === 'CANCELLED') throw conflict('This event was cancelled.');
@@ -167,6 +167,7 @@ export async function uploadPhotos(files: Express.Multer.File[], meta: UploadMet
         if (!album) throw badRequest('Album not found for this event.', [{ field: 'albumId', message: 'Not found' }]);
     }
 
+    const companyId = actor.companyId ?? event.company_id ?? 1;
     const results: UploadResult[] = [];
     for (const [i, file] of files.entries()) {
         const clientUploadId = meta.clientUploadIds?.[i]?.slice(0, 64) || null;
@@ -190,14 +191,14 @@ export async function uploadPhotos(files: Express.Multer.File[], meta: UploadMet
             const key = `events/${meta.eventId}/originals/${uuid()}${EXT[info.format] ?? path.extname(file.originalname).toLowerCase()}`;
             await storage.put(key, file.buffer, info.mime);
             const res = await execute(
-                `INSERT INTO tblPhoto (event_id, gallery_id, album_id, uploaded_by, client_upload_id, camera_label, file_name, mime_type, size_bytes, checksum, width, height, original_key)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                [meta.eventId, gallery.id, meta.albumId ?? null, actor.id, clientUploadId, meta.cameraLabel ?? null, file.originalname.slice(0, 255), info.mime, file.size, checksum, info.width, info.height, key],
+                `INSERT INTO tblPhoto (company_id, event_id, gallery_id, album_id, uploaded_by, client_upload_id, camera_label, file_name, mime_type, size_bytes, checksum, width, height, original_key)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [companyId, meta.eventId, gallery.id, meta.albumId ?? null, actor.id, clientUploadId, meta.cameraLabel ?? null, file.originalname.slice(0, 255), info.mime, file.size, checksum, info.width, info.height, key],
             );
             const e = info.exif;
             await execute(
-                'INSERT INTO tblPhotoMetadata (photo_id, taken_at, camera_make, camera_model, lens, iso, exposure, aperture, focal_length) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                [res.insertId, e.takenAt ? toSqlDateTime(e.takenAt) : null, e.make, e.model, e.lens, e.iso, e.exposure, e.aperture, e.focalLength],
+                'INSERT INTO tblPhotoMetadata (company_id, photo_id, taken_at, camera_make, camera_model, lens, iso, exposure, aperture, focal_length) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                [companyId, res.insertId, e.takenAt ? toSqlDateTime(e.takenAt) : null, e.make, e.model, e.lens, e.iso, e.exposure, e.aperture, e.focalLength],
             );
             photoQueue.enqueue(res.insertId);
             results.push({ fileName: file.originalname, ok: true, photoId: res.insertId, clientUploadId });

@@ -14,6 +14,7 @@ import { signGallerySession, type GallerySession, GALLERY_SESSION_HOURS } from '
 
 export interface GalleryRow {
     id: number;
+    company_id: number;
     event_id: number;
     title: string;
     description: string | null;
@@ -32,12 +33,18 @@ export interface GalleryRow {
     cover_photo_id?: number | null;
 }
 
-export async function loadGallery(id: number): Promise<GalleryRow> {
+export async function loadGallery(id: number, companyId?: number | null): Promise<GalleryRow> {
+    const where = ['g.id = ?', 'g.deleted_at IS NULL'];
+    const params: unknown[] = [id];
+    if (companyId) {
+        where.push('g.company_id = ?');
+        params.push(companyId);
+    }
     const g = await queryOne<GalleryRow>(
         `SELECT g.*, e.customer_id, e.title AS event_title, e.status AS event_status, e.event_date, e.venue AS event_venue, e.cover_key
            FROM tblGallery g JOIN tblEvent e ON e.id = g.event_id AND e.deleted_at IS NULL
-          WHERE g.id = ? AND g.deleted_at IS NULL`,
-        [id],
+          WHERE ${where.join(' AND ')}`,
+        params,
     );
     if (!g) throw notFound('Gallery');
     return g;
@@ -51,9 +58,13 @@ export const galleryLinkUrl = (rawToken: string) => `${config.FRONTEND_URL}/g/${
 
 /* ---------------- Admin ---------------- */
 
-export async function listGalleries(q: { page: number; pageSize: number; search?: string; status?: string }) {
+export async function listGalleries(q: { page: number; pageSize: number; search?: string; status?: string; companyId?: number }) {
     const where = ['g.deleted_at IS NULL', 'e.deleted_at IS NULL'];
     const params: unknown[] = [];
+    if (q.companyId) {
+        where.push('g.company_id = ?');
+        params.push(q.companyId);
+    }
     if (q.search) {
         where.push('(g.title LIKE ? OR e.title LIKE ? OR e.event_code LIKE ? OR c.name LIKE ?)');
         const t = likeTerm(q.search);
@@ -76,9 +87,13 @@ export async function listGalleries(q: { page: number; pageSize: number; search?
     return paged(items, total, q);
 }
 
-export async function listQrCodes(q: { page: number; pageSize: number; search?: string; state?: string }) {
+export async function listQrCodes(q: { page: number; pageSize: number; search?: string; state?: string; companyId?: number }) {
     const where = ['g.deleted_at IS NULL', 'e.deleted_at IS NULL'];
     const params: unknown[] = [];
+    if (q.companyId) {
+        where.push('g.company_id = ?');
+        params.push(q.companyId);
+    }
     if (q.search) {
         where.push('(t.label LIKE ? OR g.title LIKE ? OR e.title LIKE ? OR e.event_code LIKE ? OR c.name LIKE ? OR t.token_hint LIKE ?)');
         const term = likeTerm(q.search);
@@ -123,8 +138,8 @@ export async function listQrCodes(q: { page: number; pageSize: number; search?: 
     return paged(items, total, q);
 }
 
-export async function getGalleryAdmin(id: number) {
-    const g = await loadGallery(id);
+export async function getGalleryAdmin(id: number, companyId?: number | null) {
+    const g = await loadGallery(id, companyId);
     const [albums, tokens, stats, recentAccess] = await Promise.all([
         query('SELECT a.*, (SELECT COUNT(*) FROM tblPhoto p WHERE p.album_id = a.id AND p.deleted_at IS NULL) AS photo_count FROM tblAlbum a WHERE a.gallery_id = ? AND a.deleted_at IS NULL ORDER BY a.sort_order, a.id', [id]),
         listTokens(id),
@@ -165,20 +180,21 @@ export async function updateGallery(id: number, input: GalleryUpdate, ctx: Audit
 }
 
 export async function createGallery(eventId: number, title: string, ctx: AuditContext) {
-    const e = await queryOne('SELECT id FROM tblEvent WHERE id = ? AND deleted_at IS NULL', [eventId]);
+    const e = await queryOne<{ id: number; company_id: number | null }>('SELECT id, company_id FROM tblEvent WHERE id = ? AND deleted_at IS NULL', [eventId]);
     if (!e) throw notFound('Event');
-    const id = (await execute('INSERT INTO tblGallery (event_id, title, created_by) VALUES (?, ?, ?)', [eventId, title, ctx.userId])).insertId;
+    const companyId = ctx.companyId ?? e.company_id ?? 1;
+    const id = (await execute('INSERT INTO tblGallery (company_id, event_id, title, created_by) VALUES (?, ?, ?, ?)', [companyId, eventId, title, ctx.userId])).insertId;
     await audit(ctx, 'GALLERY_CREATED', 'galleries', id, { eventId });
     return getGalleryAdmin(id);
 }
 
 export async function saveAlbum(galleryId: number, albumId: number | null, input: { name: string; description?: string | null; sortOrder: number }, ctx: AuditContext) {
-    await loadGallery(galleryId);
+    const g = await loadGallery(galleryId);
     if (albumId) {
         const res = await execute('UPDATE tblAlbum SET name = ?, description = ?, sort_order = ? WHERE id = ? AND gallery_id = ? AND deleted_at IS NULL', [input.name, input.description ?? null, input.sortOrder, albumId, galleryId]);
         if (!res.affectedRows) throw notFound('Album');
     } else {
-        albumId = (await execute('INSERT INTO tblAlbum (gallery_id, name, description, sort_order) VALUES (?, ?, ?, ?)', [galleryId, input.name, input.description ?? null, input.sortOrder])).insertId;
+        albumId = (await execute('INSERT INTO tblAlbum (company_id, gallery_id, name, description, sort_order) VALUES (?, ?, ?, ?, ?)', [g.company_id ?? 1, galleryId, input.name, input.description ?? null, input.sortOrder])).insertId;
     }
     await audit(ctx, 'ALBUM_SAVED', 'galleries', galleryId, { albumId, name: input.name });
     return queryOne('SELECT * FROM tblAlbum WHERE id = ?', [albumId]);
@@ -248,9 +264,9 @@ export async function generateQr(galleryId: number, input: TokenInput, ctx: Audi
 
     const raw = randomToken(24);
     const res = await execute(
-        `INSERT INTO tblGalleryToken (gallery_id, scope, album_id, photo_id, label, token_hash, token_encrypted, token_hint, expires_at, max_uses, created_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [galleryId, input.scope, input.scope === 'ALBUM' ? input.albumId : null, input.scope === 'PHOTO' ? input.photoId : null, input.label ?? null, sha256(raw), encrypt(raw), raw.slice(0, 6), expiresAt, input.maxUses ?? null, ctx.userId],
+        `INSERT INTO tblGalleryToken (company_id, gallery_id, scope, album_id, photo_id, label, token_hash, token_encrypted, token_hint, expires_at, max_uses, created_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [g.company_id ?? 1, galleryId, input.scope, input.scope === 'ALBUM' ? input.albumId : null, input.scope === 'PHOTO' ? input.photoId : null, input.label ?? null, sha256(raw), encrypt(raw), raw.slice(0, 6), expiresAt, input.maxUses ?? null, ctx.userId],
     );
     await audit(ctx, 'QR_GENERATED', 'galleries', galleryId, { tokenId: res.insertId, scope: input.scope, expiresAt });
     const url = galleryUrl(raw);

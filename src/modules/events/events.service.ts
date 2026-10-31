@@ -23,6 +23,7 @@ export type EventStatus = (typeof EVENT_STATUSES)[number];
 
 export interface EventInput {
     customerId: number;
+    companyId?: number | null;
     bookingId?: number | null;
     title: string;
     eventType: string;
@@ -36,6 +37,11 @@ export interface EventInput {
 
 /** Staff with events.view/manage see everything; photographers/editors only events they are assigned to; customers only their own. */
 export async function assertEventAccess(actor: AuthUser, eventId: number, mode: 'view' | 'work' = 'view'): Promise<void> {
+    if (actor.companyId) {
+        const ev = await queryOne<{ company_id: number | null }>('SELECT company_id FROM tblEvent WHERE id = ? AND deleted_at IS NULL', [eventId]);
+        if (!ev) throw notFound('Event');
+        if (ev.company_id && ev.company_id !== actor.companyId) throw forbidden('You do not have access to events from another studio.');
+    }
     if (hasPermission(actor, 'events.manage')) return;
     if (mode === 'view' && hasPermission(actor, 'events.view')) return;
     if (hasPermission(actor, 'events.assigned', 'photos.upload', 'photos.edit')) {
@@ -49,13 +55,13 @@ export async function assertEventAccess(actor: AuthUser, eventId: number, mode: 
     throw forbidden('You are not assigned to this event.');
 }
 
-async function createGallery(conn: Db, eventId: number, title: string, userId: number | null) {
-    const days = (await getSetting('gallery')).defaultExpiryDays;
+async function createGallery(conn: Db, eventId: number, title: string, userId: number | null, companyId?: number | null) {
+    const days = (await getSetting('gallery', companyId)).defaultExpiryDays;
     const expires = toSqlDateTime(new Date(Date.now() + days * 86_400_000));
     // DRAFT until Go live; auto_publish so guest QR shows photos as soon as previews are ready.
     const res = await execute(
-        "INSERT INTO tblGallery (event_id, title, status, auto_publish, expires_at, created_by) VALUES (?, ?, 'DRAFT', 1, ?, ?)",
-        [eventId, title, expires, userId],
+        "INSERT INTO tblGallery (company_id, event_id, title, status, auto_publish, expires_at, created_by) VALUES (?, ?, ?, 'DRAFT', 1, ?, ?)",
+        [companyId ?? null, eventId, title, expires, userId],
         conn,
     );
     return res.insertId;
@@ -63,19 +69,20 @@ async function createGallery(conn: Db, eventId: number, title: string, userId: n
 
 export async function createEvent(input: EventInput, ctx: AuditContext, conn?: PoolConnection) {
     const run = async (db: PoolConnection) => {
-        const customer = await queryOne('SELECT id FROM tblCustomer WHERE id = ? AND deleted_at IS NULL', [input.customerId], db);
+        const customer = await queryOne<{ id: number; company_id: number | null }>('SELECT id, company_id FROM tblCustomer WHERE id = ? AND deleted_at IS NULL', [input.customerId], db);
         if (!customer) throw badRequest('Customer not found.', [{ field: 'customerId', message: 'Not found' }]);
+        const companyId = input.companyId ?? ctx.companyId ?? customer.company_id ?? 1;
         if (!input.force) {
-            await assertSlotFree({ eventDate: input.eventDate, startTime: input.startTime, endTime: input.endTime, excludeBookingId: input.bookingId ?? null }, db);
+            await assertSlotFree({ eventDate: input.eventDate, startTime: input.startTime, endTime: input.endTime, excludeBookingId: input.bookingId ?? null, companyId }, db);
         }
         const code = await nextNumber('event', db);
         const res = await execute(
-            `INSERT INTO tblEvent (event_code, booking_id, customer_id, title, event_type, event_date, start_time, end_time, venue, notes, created_by)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [code, input.bookingId ?? null, input.customerId, input.title, input.eventType, input.eventDate, input.startTime ?? null, input.endTime ?? null, input.venue ?? null, input.notes ?? null, ctx.userId],
+            `INSERT INTO tblEvent (company_id, event_code, booking_id, customer_id, title, event_type, event_date, start_time, end_time, venue, notes, created_by)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [companyId, code, input.bookingId ?? null, input.customerId, input.title, input.eventType, input.eventDate, input.startTime ?? null, input.endTime ?? null, input.venue ?? null, input.notes ?? null, ctx.userId],
             db,
         );
-        await createGallery(db, res.insertId, input.title, ctx.userId);
+        await createGallery(db, res.insertId, input.title, ctx.userId, companyId);
         return res.insertId;
     };
     const id = conn ? await run(conn) : await withTransaction(run);
@@ -114,6 +121,7 @@ export interface EventFilter {
     to?: string;
     customerId?: number;
     assignedTo?: number;
+    companyId?: number;
     sort?: string;
     order: 'asc' | 'desc';
 }
@@ -121,6 +129,7 @@ export interface EventFilter {
 export async function listEvents(f: EventFilter) {
     const where = ['e.deleted_at IS NULL'];
     const params: unknown[] = [];
+    if (f.companyId) { where.push('e.company_id = ?'); params.push(f.companyId); }
     if (f.search) {
         where.push('(e.title LIKE ? OR e.event_code LIKE ? OR e.venue LIKE ? OR c.name LIKE ?)');
         const t = likeTerm(f.search);
@@ -134,7 +143,7 @@ export async function listEvents(f: EventFilter) {
     const w = where.join(' AND ');
     const total = (await queryOne<{ n: number }>(`SELECT COUNT(*) AS n FROM tblEvent e JOIN tblCustomer c ON c.id = e.customer_id WHERE ${w}`, params))?.n ?? 0;
     const items = await query(
-        `SELECT e.id, e.event_code, e.title, e.event_type, e.event_date, e.start_time, e.end_time, e.venue, e.status, e.booking_id, e.cover_key,
+        `SELECT e.id, e.company_id, e.event_code, e.title, e.event_type, e.event_date, e.start_time, e.end_time, e.venue, e.status, e.booking_id, e.cover_key,
                 c.id AS customer_id, c.name AS customer_name, c.phone AS customer_phone,
                 g.id AS gallery_id, g.status AS gallery_status,
                 (SELECT gt.token_encrypted FROM tblGalleryToken gt WHERE gt.gallery_id = g.id AND gt.scope = 'EVENT' AND gt.revoked_at IS NULL AND (gt.expires_at IS NULL OR gt.expires_at > UTC_TIMESTAMP()) ORDER BY gt.id DESC LIMIT 1) AS token_encrypted,
@@ -180,7 +189,7 @@ function withPaymentStatus<T extends Record<string, any>>(e: T): T & { payment_s
     return { ...e, payment_status };
 }
 
-export async function getEvent(id: number) {
+export async function getEvent(id: number, companyId?: number | null) {
     const e = await queryOne(
         `SELECT e.*, c.name AS customer_name, c.email AS customer_email, c.phone AS customer_phone, c.user_id AS customer_user_id,
                 b.booking_no, b.status AS booking_status, b.total_amount, b.paid_amount, b.package_id, pk.name AS package_name, pk.includes_digital
@@ -190,6 +199,7 @@ export async function getEvent(id: number) {
         [id],
     );
     if (!e) throw notFound('Event');
+    if (companyId && e.company_id && e.company_id !== companyId) throw notFound('Event');
     const [staff, gallery, photoStats, revenue, access, eventAssets] = await Promise.all([
         query(
             `SELECT es.id, es.user_id, u.name, u.email, u.phone, es.role, es.camera_label, es.task_status, es.created_at,

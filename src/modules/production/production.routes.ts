@@ -36,6 +36,8 @@ proofsRouter.get(
         if (!hasPermission(req.user, 'proofs.manage', 'galleries.manage', 'events.view')) {
             if (!req.user!.customerId) throw forbidden();
             q.customerId = req.user!.customerId;
+        } else if (req.user?.companyId && !req.user.roles.includes('SUPER_ADMIN')) {
+            q.companyId = req.user.companyId;
         }
         ok(res, await production.listProofs(q));
     }),
@@ -111,7 +113,8 @@ printingRouter.get(
     validate(pageQuery.extend({ status: z.enum(production.PRINT_STATUSES).optional(), kind: z.enum(['PRINT', 'FRAME', 'CANVAS', 'ALBUM']).optional(), mine: boolish.optional() }), 'query'),
     asyncHandler(async (req, res) => {
         const { mine, ...q } = req.query as unknown as Parameters<typeof production.listPrintJobs>[0] & { mine?: boolean };
-        ok(res, await production.listPrintJobs({ ...q, mine: mine ? req.user!.id : undefined }));
+        const companyId = !req.user?.roles.includes('SUPER_ADMIN') ? req.user?.companyId : undefined;
+        ok(res, await production.listPrintJobs({ ...q, mine: mine ? req.user!.id : undefined, companyId }));
     }),
 );
 
@@ -140,7 +143,8 @@ deliveryRouter.use(authenticate, requirePermission('delivery.manage', 'printing.
 deliveryRouter.get(
     '/dashboard',
     asyncHandler(async (req, res) => {
-        ok(res, await production.productionDashboard(req.user!.id));
+        const companyId = !req.user?.roles.includes('SUPER_ADMIN') ? req.user?.companyId : undefined;
+        ok(res, await production.productionDashboard(req.user!.id, companyId));
     }),
 );
 
@@ -149,7 +153,8 @@ deliveryRouter.get(
     validate(pageQuery.extend({ status: z.enum(production.DELIVERY_STATUSES).optional(), method: z.enum(['PICKUP', 'COURIER', 'HAND_DELIVERY']).optional(), mine: boolish.optional() }), 'query'),
     asyncHandler(async (req, res) => {
         const { mine, ...q } = req.query as unknown as Parameters<typeof production.listDeliveries>[0] & { mine?: boolean };
-        ok(res, await production.listDeliveries({ ...q, mine: mine ? req.user!.id : undefined }));
+        const companyId = !req.user?.roles.includes('SUPER_ADMIN') ? req.user?.companyId : undefined;
+        ok(res, await production.listDeliveries({ ...q, mine: mine ? req.user!.id : undefined, companyId }));
     }),
 );
 

@@ -78,7 +78,9 @@ export async function ensureShopOrderTable(): Promise<void> {
             tracking_number VARCHAR(100) NULL,
             courier_partner VARCHAR(100) NULL,
             created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            company_id INT UNSIGNED DEFAULT NULL,
+            KEY idx_shoporder_company (company_id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `).catch(() => undefined);
 }
@@ -117,15 +119,16 @@ function parseOrderRow(row: any) {
     };
 }
 
-export async function createShopOrder(input: CreateShopOrderInput) {
+export async function createShopOrder(input: CreateShopOrderInput, companyId?: number | null) {
     await ensureShopOrderTable();
     const id = input.id?.trim() || `FL-${Date.now().toString().slice(-7)}`;
     const itemsJson = JSON.stringify(input.items);
+    const targetCompanyId = companyId ?? 1;
 
     await execute(
         `INSERT INTO tblShopOrder 
-          (id, customer_name, customer_phone, customer_email, customer_address, customer_city, customer_state, customer_pincode, instructions, items, subtotal, customization, delivery, discount, total, payment_method, payment_status, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          (company_id, id, customer_name, customer_phone, customer_email, customer_address, customer_city, customer_state, customer_pincode, instructions, items, subtotal, customization, delivery, discount, total, payment_method, payment_status, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE 
             customer_name = VALUES(customer_name),
             customer_phone = VALUES(customer_phone),
@@ -136,6 +139,7 @@ export async function createShopOrder(input: CreateShopOrderInput) {
             payment_status = VALUES(payment_status),
             status = VALUES(status)`,
         [
+            targetCompanyId,
             id,
             input.customer.name.trim(),
             input.customer.mobile.trim(),
@@ -161,11 +165,15 @@ export async function createShopOrder(input: CreateShopOrderInput) {
     return parseOrderRow(created);
 }
 
-export async function listShopOrders(search?: string, status?: string) {
+export async function listShopOrders(search?: string, status?: string, companyId?: number | null) {
     await ensureShopOrderTable();
     const where: string[] = [];
     const params: unknown[] = [];
 
+    if (companyId) {
+        where.push('company_id = ?');
+        params.push(companyId);
+    }
     if (search?.trim()) {
         const term = `%${search.trim().toLowerCase()}%`;
         where.push('(LOWER(id) LIKE ? OR LOWER(customer_name) LIKE ? OR LOWER(customer_phone) LIKE ? OR LOWER(customer_email) LIKE ?)');
@@ -181,41 +189,53 @@ export async function listShopOrders(search?: string, status?: string) {
     return rows.map(parseOrderRow);
 }
 
-export async function getShopOrder(id: string) {
+export async function getShopOrder(id: string, companyId?: number | null) {
     await ensureShopOrderTable();
-    const row = await queryOne('SELECT * FROM tblShopOrder WHERE id = ?', [id]);
+    const where = ['id = ?'];
+    const params: unknown[] = [id];
+    if (companyId) {
+        where.push('company_id = ?');
+        params.push(companyId);
+    }
+    const row = await queryOne(`SELECT * FROM tblShopOrder WHERE ${where.join(' AND ')}`, params);
     if (!row) throw notFound('Order');
     return parseOrderRow(row);
 }
 
-export async function updateShopOrder(id: string, input: UpdateShopOrderInput) {
+export async function updateShopOrder(id: string, input: UpdateShopOrderInput, companyId?: number | null) {
     await ensureShopOrderTable();
-    const existing = await queryOne('SELECT id FROM tblShopOrder WHERE id = ?', [id]);
+    const where = ['id = ?'];
+    const params: unknown[] = [id];
+    if (companyId) {
+        where.push('company_id = ?');
+        params.push(companyId);
+    }
+    const existing = await queryOne(`SELECT id FROM tblShopOrder WHERE ${where.join(' AND ')}`, params);
     if (!existing) throw notFound('Order');
 
     const sets: string[] = [];
-    const params: unknown[] = [];
+    const updateParams: unknown[] = [];
 
     if (input.status) {
         sets.push('status = ?');
-        params.push(input.status);
+        updateParams.push(input.status);
     }
     if (input.paymentStatus) {
         sets.push('payment_status = ?');
-        params.push(input.paymentStatus);
+        updateParams.push(input.paymentStatus);
     }
     if (input.trackingNumber !== undefined) {
         sets.push('tracking_number = ?');
-        params.push(input.trackingNumber);
+        updateParams.push(input.trackingNumber);
     }
     if (input.courierPartner !== undefined) {
         sets.push('courier_partner = ?');
-        params.push(input.courierPartner);
+        updateParams.push(input.courierPartner);
     }
 
     if (sets.length > 0) {
-        params.push(id);
-        await execute(`UPDATE tblShopOrder SET ${sets.join(', ')} WHERE id = ?`, params);
+        updateParams.push(id);
+        await execute(`UPDATE tblShopOrder SET ${sets.join(', ')} WHERE id = ?`, updateParams);
     }
 
     const updated = await queryOne('SELECT * FROM tblShopOrder WHERE id = ?', [id]);

@@ -197,11 +197,15 @@ export const PUBLIC_SETTING_KEYS: SettingKey[] = ['studio', 'website'];
 
 const caches = new Map<string, { value: Settings; expires: number }>();
 
-export async function getSettings(): Promise<Settings> {
-    const cacheKey = currentDatabaseKey();
+export async function getSettings(companyId?: number | null): Promise<Settings> {
+    const cId = companyId ?? 1;
+    const cacheKey = `${currentDatabaseKey()}:${cId}`;
     const cache = caches.get(cacheKey);
     if (cache && cache.expires > Date.now()) return cache.value;
-    const rows = await query<{ key: SettingKey; value: unknown }>('SELECT `key`, value FROM tblSetting');
+    const rows = await query<{ key: SettingKey; value: unknown }>(
+        'SELECT `key`, value FROM tblSetting WHERE company_id = ?',
+        [cId],
+    );
     const merged = structuredClone(DEFAULT_SETTINGS) as Record<SettingKey, unknown>;
     for (const row of rows) {
         if (row.key in settingSchemas) {
@@ -213,17 +217,18 @@ export async function getSettings(): Promise<Settings> {
     return merged as Settings;
 }
 
-export async function getSetting<K extends SettingKey>(key: K): Promise<Settings[K]> {
-    return (await getSettings())[key];
+export async function getSetting<K extends SettingKey>(key: K, companyId?: number | null): Promise<Settings[K]> {
+    return (await getSettings(companyId))[key];
 }
 
-export async function updateSetting<K extends SettingKey>(key: K, value: unknown, userId: number | null): Promise<Settings[K]> {
+export async function updateSetting<K extends SettingKey>(key: K, value: unknown, userId: number | null, companyId?: number | null): Promise<Settings[K]> {
+    const cId = companyId ?? 1;
     const parsed = settingSchemas[key].parse(value) as Settings[K];
     await execute(
-        'INSERT INTO tblSetting (`key`, value, is_public, updated_by) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE value = VALUES(value), updated_by = VALUES(updated_by)',
-        [key, json(parsed), PUBLIC_SETTING_KEYS.includes(key) ? 1 : 0, userId],
+        'INSERT INTO tblSetting (company_id, `key`, value, is_public, updated_by) VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE value = VALUES(value), updated_by = VALUES(updated_by)',
+        [cId, key, json(parsed), PUBLIC_SETTING_KEYS.includes(key) ? 1 : 0, userId],
     );
-    caches.delete(currentDatabaseKey());
+    caches.delete(`${currentDatabaseKey()}:${cId}`);
     return parsed;
 }
 

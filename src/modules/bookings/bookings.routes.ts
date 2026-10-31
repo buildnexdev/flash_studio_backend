@@ -56,6 +56,7 @@ router.get(
     validate(pageQuery.extend({ status: z.enum(bookings.BOOKING_STATUSES).optional(), from: ymd.optional(), to: ymd.optional(), customerId: z.coerce.number().int().optional() }), 'query'),
     asyncHandler(async (req, res) => {
         const q = req.query as unknown as bookings.BookingFilter;
+        if (req.user?.companyId) q.companyId = req.user.companyId;
         if (!hasPermission(req.user, 'bookings.view', 'bookings.manage')) {
             if (!req.user!.customerId) throw forbidden();
             q.customerId = req.user!.customerId;
