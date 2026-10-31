@@ -107,7 +107,8 @@ router.get(
             else throw forbidden();
             if (q.trash) throw forbidden();
         }
-        ok(res, await photos.listPhotos(q));
+        const companyId = !req.user?.roles.includes('SUPER_ADMIN') ? (req.user?.companyId ?? undefined) : undefined;
+        ok(res, await photos.listPhotos({ ...q, companyId }));
     }),
 );
 

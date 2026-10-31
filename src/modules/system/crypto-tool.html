@@ -1,0 +1,594 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API Payload Crypto Tool | Nammaqr Photography</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-base: #0b0d13;
+            --bg-card: #131722;
+            --bg-card-subtle: #1a202e;
+            --bg-input: #0e121a;
+            --border-subtle: #242c3f;
+            --border-focus: #c9a24b;
+            --text-primary: #f1f5f9;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            --accent-gold: #c9a24b;
+            --accent-gold-hover: #dcb35c;
+            --accent-gold-glow: rgba(201, 162, 75, 0.25);
+            --success-color: #10b981;
+            --error-color: #ef4444;
+            --code-key: #7dd3fc;
+            --code-str: #a7f3d0;
+            --code-num: #fde047;
+            --code-bool: #f472b6;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+            background-color: var(--bg-base);
+            color: var(--text-primary);
+            min-height: 100vh;
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 1100px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        /* Header */
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 24px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-subtle);
+            border-radius: 16px;
+            backdrop-filter: blur(12px);
+        }
+
+        .brand-section {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .brand-logo {
+            width: 44px;
+            height: 44px;
+            background: linear-gradient(135deg, #2a2012, #141722);
+            border: 1px solid var(--accent-gold);
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            box-shadow: 0 0 15px var(--accent-gold-glow);
+        }
+
+        .brand-title h1 {
+            font-size: 1.25rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+            color: #fff;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .brand-title p {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+
+        .badge-live {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            background: rgba(16, 185, 129, 0.1);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            border-radius: 20px;
+            color: var(--success-color);
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+
+        .badge-live .dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--success-color);
+            box-shadow: 0 0 8px var(--success-color);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.4; transform: scale(1.2); }
+        }
+
+        /* Tabs */
+        .tabs {
+            display: flex;
+            gap: 8px;
+            background: var(--bg-card);
+            padding: 6px;
+            border-radius: 12px;
+            border: 1px solid var(--border-subtle);
+        }
+
+        .tab-btn {
+            flex: 1;
+            padding: 10px 20px;
+            background: transparent;
+            border: none;
+            border-radius: 8px;
+            color: var(--text-secondary);
+            font-size: 0.95rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        .tab-btn:hover {
+            color: var(--text-primary);
+            background: rgba(255, 255, 255, 0.04);
+        }
+
+        .tab-btn.active {
+            background: var(--accent-gold);
+            color: #0b0d13;
+            box-shadow: 0 4px 12px var(--accent-gold-glow);
+        }
+
+        /* Main Workspace Panels */
+        .panel {
+            background: var(--bg-card);
+            border: 1px solid var(--border-subtle);
+            border-radius: 16px;
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .panel-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+        }
+
+        @media (max-width: 850px) {
+            .panel-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .column-box {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .column-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .column-title {
+            font-size: 0.9rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: var(--text-secondary);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .actions-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .btn-action {
+            padding: 6px 12px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            background: var(--bg-card-subtle);
+            border: 1px solid var(--border-subtle);
+            border-radius: 6px;
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .btn-action:hover {
+            color: var(--text-primary);
+            border-color: var(--accent-gold);
+        }
+
+        /* Textarea / Code Area */
+        textarea, pre {
+            width: 100%;
+            height: 380px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
+            line-height: 1.6;
+            padding: 16px;
+            background: var(--bg-input);
+            border: 1px solid var(--border-subtle);
+            border-radius: 10px;
+            color: #e2e8f0;
+            outline: none;
+            resize: vertical;
+            transition: border-color 0.2s;
+        }
+
+        textarea:focus {
+            border-color: var(--border-focus);
+            box-shadow: 0 0 0 3px rgba(201, 162, 75, 0.15);
+        }
+
+        pre {
+            overflow: auto;
+            white-space: pre-wrap;
+            word-break: break-all;
+            background: #090c12;
+            border: 1px solid #1c2333;
+        }
+
+        .btn-primary {
+            width: 100%;
+            padding: 14px;
+            background: linear-gradient(135deg, var(--accent-gold), #b8913b);
+            border: none;
+            border-radius: 10px;
+            color: #0b0d13;
+            font-size: 1rem;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            box-shadow: 0 4px 14px var(--accent-gold-glow);
+        }
+
+        .btn-primary:hover {
+            background: linear-gradient(135deg, var(--accent-gold-hover), #c9a24b);
+            transform: translateY(-1px);
+        }
+
+        .btn-primary:active {
+            transform: translateY(0);
+        }
+
+        /* Status & Alert Banner */
+        .status-banner {
+            padding: 12px 16px;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            display: none;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .status-banner.error {
+            display: flex;
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            color: var(--error-color);
+        }
+
+        .status-banner.success {
+            display: flex;
+            background: rgba(16, 185, 129, 0.1);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            color: var(--success-color);
+        }
+
+        /* JSON Syntax Highlighting */
+        .json-key { color: var(--code-key); font-weight: 600; }
+        .json-string { color: var(--code-str); }
+        .json-number { color: var(--code-num); font-weight: 600; }
+        .json-boolean { color: var(--code-bool); font-weight: 600; }
+        .json-null { color: #94a3b8; font-style: italic; }
+
+        .footer {
+            margin-top: 10px;
+            text-align: center;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <!-- Header -->
+    <header class="header">
+        <div class="brand-section">
+            <div class="brand-logo">🔐</div>
+            <div class="brand-title">
+                <h1>API Payload Crypto Tool</h1>
+                <p>Nammaqr Photography Studio &bull; End-to-End AES-256-CBC Inspector</p>
+            </div>
+        </div>
+        <div class="badge-live">
+            <span class="dot"></span>
+            AES-256 Verified
+        </div>
+    </header>
+
+    <!-- Tabs -->
+    <div class="tabs">
+        <button id="tabDecrypt" class="tab-btn active" onclick="switchTab('decrypt')">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 9.9-1"></path></svg>
+            Decrypt Network Payload
+        </button>
+        <button id="tabEncrypt" class="tab-btn" onclick="switchTab('encrypt')">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+            Encrypt JSON for Request
+        </button>
+    </div>
+
+    <!-- Main Panel -->
+    <main class="panel">
+        <div id="statusAlert" class="status-banner"></div>
+
+        <div class="panel-grid">
+            <!-- Left: Input -->
+            <div class="column-box">
+                <div class="column-header">
+                    <span id="inputLabel" class="column-title">Encrypted Ciphertext</span>
+                    <div class="actions-row">
+                        <button class="btn-action" onclick="pasteSample()">Load Sample</button>
+                        <button class="btn-action" onclick="clearInput()">Clear</button>
+                    </div>
+                </div>
+                <textarea id="inputText" placeholder="Paste the encrypted string or full JSON from Chrome DevTools Network Tab here...&#10;e.g. 5246db9b...:ea869... or { &quot;payload&quot;: &quot;...&quot; }"></textarea>
+            </div>
+
+            <!-- Right: Output -->
+            <div class="column-box">
+                <div class="column-header">
+                    <span id="outputLabel" class="column-title">Decrypted JSON Output</span>
+                    <div class="actions-row">
+                        <button id="copyBtn" class="btn-action" onclick="copyOutput()">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                            Copy Result
+                        </button>
+                    </div>
+                </div>
+                <pre id="outputPre">// Result will appear here...</pre>
+            </div>
+        </div>
+
+        <button id="executeBtn" class="btn-primary" onclick="handleExecute()">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="m13 2-2 10 7-3-7 13 2-10-7 3Z"></path></svg>
+            Decrypt Payload Now
+        </button>
+    </main>
+
+    <footer class="footer">
+        Studio API Secret Key is securely loaded from environment &bull; Compatible with Chrome, Safari, and Postman
+    </footer>
+</div>
+
+<script>
+    let activeMode = 'decrypt';
+    let rawOutputString = '';
+
+    function switchTab(mode) {
+        activeMode = mode;
+        const tabDecrypt = document.getElementById('tabDecrypt');
+        const tabEncrypt = document.getElementById('tabEncrypt');
+        const inputLabel = document.getElementById('inputLabel');
+        const outputLabel = document.getElementById('outputLabel');
+        const executeBtn = document.getElementById('executeBtn');
+        const inputText = document.getElementById('inputText');
+        const outputPre = document.getElementById('outputPre');
+        clearStatus();
+
+        if (mode === 'decrypt') {
+            tabDecrypt.classList.add('active');
+            tabEncrypt.classList.remove('active');
+            inputLabel.textContent = 'Encrypted Ciphertext';
+            outputLabel.textContent = 'Decrypted JSON Output';
+            inputText.placeholder = 'Paste the encrypted string or full JSON from Chrome DevTools Network Tab here...\ne.g. 5246db9b...:ea869... or { "payload": "..." }';
+            executeBtn.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="m13 2-2 10 7-3-7 13 2-10-7 3Z"></path></svg> Decrypt Payload Now';
+        } else {
+            tabEncrypt.classList.add('active');
+            tabDecrypt.classList.remove('active');
+            inputLabel.textContent = 'Raw JSON / Body to Encrypt';
+            outputLabel.textContent = 'Encrypted Payload String';
+            inputText.placeholder = '{\n  "email": "manager@photolab.test",\n  "companyId": 1\n}';
+            executeBtn.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg> Encrypt Payload Now';
+        }
+        outputPre.innerHTML = '// Result will appear here...';
+    }
+
+    function showStatus(msg, isError = false) {
+        const alert = document.getElementById('statusAlert');
+        alert.className = 'status-banner ' + (isError ? 'error' : 'success');
+        alert.textContent = (isError ? '⚠️ Error: ' : '✅ Success: ') + msg;
+    }
+
+    function clearStatus() {
+        const alert = document.getElementById('statusAlert');
+        alert.className = 'status-banner';
+        alert.style.display = 'none';
+    }
+
+    function clearInput() {
+        document.getElementById('inputText').value = '';
+        document.getElementById('outputPre').innerHTML = '// Result will appear here...';
+        clearStatus();
+    }
+
+    function syntaxHighlight(json) {
+        if (typeof json !== 'string') {
+            json = JSON.stringify(json, null, 2);
+        }
+        json = json.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        return json.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, function (match) {
+            let cls = 'json-number';
+            if (/^"/.test(match)) {
+                if (/:$/.test(match)) {
+                    cls = 'json-key';
+                } else {
+                    cls = 'json-string';
+                }
+            } else if (/true|false/.test(match)) {
+                cls = 'json-boolean';
+            } else if (/null/.test(match)) {
+                cls = 'json-null';
+            }
+            return '<span class="' + cls + '">' + match + '</span>';
+        });
+    }
+
+    async function handleExecute() {
+        clearStatus();
+        const input = document.getElementById('inputText').value.trim();
+        const outputPre = document.getElementById('outputPre');
+
+        if (!input) {
+            showStatus('Please enter an encrypted payload or JSON first.', true);
+            return;
+        }
+
+        try {
+            if (activeMode === 'decrypt') {
+                // Auto-extract payload if pasted full JSON { "payload": "..." }
+                let cipher = input;
+                if (input.startsWith('{')) {
+                    try {
+                        const parsed = JSON.parse(input);
+                        if (parsed.payload) cipher = parsed.payload;
+                    } catch (_) {}
+                }
+
+                const res = await fetch('/crypto-tool/api/decrypt', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ payload: cipher })
+                });
+                const data = await res.json();
+                if (!res.ok || !data.success) {
+                    throw new Error(data.message || 'Decryption failed');
+                }
+
+                rawOutputString = typeof data.data === 'string' ? data.data : JSON.stringify(data.data, null, 2);
+                outputPre.innerHTML = syntaxHighlight(data.data);
+                showStatus('Payload decrypted successfully!');
+            } else {
+                let parsedBody = input;
+                try {
+                    parsedBody = JSON.parse(input);
+                } catch (_) {
+                    // Allowed as plain string
+                }
+
+                const res = await fetch('/crypto-tool/api/encrypt', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ data: parsedBody })
+                });
+                const data = await res.json();
+                if (!res.ok || !data.success) {
+                    throw new Error(data.message || 'Encryption failed');
+                }
+
+                rawOutputString = JSON.stringify({ payload: data.payload }, null, 2);
+                outputPre.innerHTML = syntaxHighlight({ payload: data.payload });
+                showStatus('Payload encrypted successfully!');
+            }
+        } catch (err) {
+            showStatus(err.message, true);
+            outputPre.textContent = 'Error: ' + err.message;
+        }
+    }
+
+    async function copyOutput() {
+        if (!rawOutputString) {
+            showStatus('Nothing to copy yet.', true);
+            return;
+        }
+        try {
+            await navigator.clipboard.writeText(rawOutputString);
+            const copyBtn = document.getElementById('copyBtn');
+            const orig = copyBtn.innerHTML;
+            copyBtn.innerHTML = '✅ Copied!';
+            setTimeout(() => { copyBtn.innerHTML = orig; }, 1800);
+        } catch (e) {
+            showStatus('Failed to copy to clipboard', true);
+        }
+    }
+
+    async function pasteSample() {
+        if (activeMode === 'decrypt') {
+            // Generate a live encrypted sample using server
+            const res = await fetch('/crypto-tool/api/encrypt', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    data: {
+                        booking_id: 101,
+                        customer: "Saideep",
+                        event_type: "Wedding Ceremony",
+                        amount_in_rupees: 45000,
+                        status: "CONFIRMED"
+                    }
+                })
+            });
+            const data = await res.json();
+            if (data.payload) {
+                document.getElementById('inputText').value = JSON.stringify({ payload: data.payload }, null, 2);
+                showStatus('Sample encrypted payload loaded! Click "Decrypt Payload Now".');
+            }
+        } else {
+            document.getElementById('inputText').value = JSON.stringify({
+                company_id: 1,
+                name: "Pre-Wedding Shoot",
+                base_price: 25000,
+                duration_hours: 4
+            }, null, 2);
+            showStatus('Sample JSON body loaded! Click "Encrypt Payload Now".');
+        }
+    }
+</script>
+
+</body>
+</html>

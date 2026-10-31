@@ -16,6 +16,8 @@ export interface AuthUser {
     email: string | null;
     phone: string | null;
     companyId: number | null;
+    companyName: string | null;
+    companySlug: string | null;
     roles: RoleCode[];
     /** tblUser.is_admin = 1 (or Super Admin): may manage other users' page access. */
     isAdmin: boolean;
@@ -55,10 +57,30 @@ export async function loadAuthUser(userId: number): Promise<AuthUser | null> {
     const hit = cache.get(key);
     if (hit && hit.expires > Date.now()) return hit.user;
 
-    const row = await queryOne<{ id: number; company_id: number | null; name: string; email: string | null; phone: string | null; status: string; token_version: number; is_admin: number; customer_id: number | null }>(
-        `SELECT u.id, u.company_id, u.name, u.email, u.phone, u.status, u.token_version, u.is_admin, c.id AS customer_id
-           FROM tblUser u LEFT JOIN tblCustomer c ON c.user_id = u.id AND c.deleted_at IS NULL
-          WHERE u.id = ? AND u.deleted_at IS NULL`,
+    const row = await queryOne<{
+        id: number;
+        company_id: number | null;
+        company_name: string | null;
+        company_slug: string | null;
+        name: string;
+        email: string | null;
+        phone: string | null;
+        status: string;
+        token_version: number;
+        is_admin: number;
+        customer_id: number | null;
+    }>(
+        `SELECT u.id,
+                COALESCE(u.company_id, ur.company_id) AS company_id,
+                comp.name AS company_name,
+                comp.slug AS company_slug,
+                u.name, u.email, u.phone, u.status, u.token_version, u.is_admin, c.id AS customer_id
+           FROM tblUser u
+      LEFT JOIN tblUserRole ur ON ur.user_id = u.id
+      LEFT JOIN tblCompany comp ON comp.companyID = COALESCE(u.company_id, ur.company_id)
+      LEFT JOIN tblCustomer c ON c.user_id = u.id AND c.deleted_at IS NULL
+          WHERE u.id = ? AND u.deleted_at IS NULL
+          LIMIT 1`,
         [userId],
     );
     if (!row || row.status !== 'ACTIVE') return null;
@@ -78,6 +100,8 @@ export async function loadAuthUser(userId: number): Promise<AuthUser | null> {
     const user: AuthUser = {
         id: row.id,
         companyId: row.company_id,
+        companyName: row.company_name ?? null,
+        companySlug: row.company_slug ?? null,
         name: row.name,
         email: row.email,
         phone: row.phone,
@@ -195,6 +219,8 @@ export function serializeUser(user: AuthUser) {
         email: user.email,
         phone: user.phone,
         companyId: user.companyId,
+        companyName: user.companyName,
+        companySlug: user.companySlug,
         roles: user.roles,
         isAdmin: user.isAdmin,
         roleLevel: primaryRole(user.roles) ? ROLE_LEVEL[primaryRole(user.roles)!] : null,

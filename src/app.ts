@@ -12,6 +12,7 @@ import { pool } from './db/pool.js';
 import { errorHandler, notFoundHandler } from './middleware/error.js';
 import { bindTenant } from './middleware/tenant.js';
 import { apiLimiter } from './middleware/rate-limit.js';
+import { cryptoMiddleware } from './middleware/crypto.js';
 import { ok } from './utils/http.js';
 import aiRoutes from './modules/ai/ai.routes.js';
 import authRoutes from './modules/auth/auth.routes.js';
@@ -35,6 +36,7 @@ import { auditRouter, notificationsRouter, portalRouter, reportsRouter, settings
 import userRoutes from './modules/users/users.routes.js';
 import companyRoutes from './modules/companies/companies.routes.js';
 import companyPublicRoutes from './modules/companies/companies.public.routes.js';
+import { cryptoToolRouter } from './modules/system/crypto-tool.routes.js';
 
 function isOriginAllowed(origin: string | undefined): boolean {
     if (!origin) return true;
@@ -105,6 +107,7 @@ export function createApp() {
                 'X-Event-Phone',
                 'X-Client',
                 'X-Studio-Slug',
+                'X-Encrypted',
                 'Accept',
             ],
             methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -123,8 +126,10 @@ export function createApp() {
         }),
     );
     app.use(express.urlencoded({ extended: false, limit: '1mb' }));
+    app.use(cryptoMiddleware);
 
     app.use('/brand', express.static(path.join(process.cwd(), 'public'), { maxAge: '7d', index: false }));
+    app.use('/crypto-tool', cryptoToolRouter);
 
     app.get('/api/health', async (_req, res) => {
         let database = 'up';

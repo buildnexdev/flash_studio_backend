@@ -17,6 +17,7 @@ const schema = z.object({
     JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),
     JWT_REFRESH_SECRET: z.string().min(32, 'JWT_REFRESH_SECRET must be at least 32 characters'),
     APP_SECRET: z.string().min(32, 'APP_SECRET must be at least 32 characters'),
+    API_CRYPTO_SECRET: z.string().default('photolab-secure-payload-encryption-secret-key-2026!'),
     ACCESS_TOKEN_TTL: z.string().default('15m'),
     REFRESH_TOKEN_DAYS: z.coerce.number().int().positive().default(30),
 

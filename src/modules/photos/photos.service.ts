@@ -255,6 +255,7 @@ export async function retryProcessing(photoId: number, actor: AuthUser) {
 export interface PhotoFilter {
     page: number;
     pageSize: number;
+    companyId?: number;
     eventId?: number;
     galleryId?: number;
     albumId?: number | 'none';
@@ -272,6 +273,7 @@ export interface PhotoFilter {
 export async function listPhotos(f: PhotoFilter) {
     const where = [f.trash ? 'p.deleted_at IS NOT NULL' : 'p.deleted_at IS NULL'];
     const params: unknown[] = [];
+    if (f.companyId) { where.push('p.company_id = ?'); params.push(f.companyId); }
     if (f.eventId) { where.push('p.event_id = ?'); params.push(f.eventId); }
     if (f.galleryId) { where.push('p.gallery_id = ?'); params.push(f.galleryId); }
     if (f.albumId === 'none') where.push('p.album_id IS NULL');
@@ -290,7 +292,7 @@ export async function listPhotos(f: PhotoFilter) {
     const from = 'FROM tblPhoto p LEFT JOIN tblPhotoMetadata m ON m.photo_id = p.id';
     const total = (await queryOne<{ n: number }>(`SELECT COUNT(*) AS n ${from} WHERE ${w}`, params))?.n ?? 0;
     const rows = await query(
-        `SELECT p.id, p.event_id, p.gallery_id, p.album_id, p.file_name, p.width, p.height, p.size_bytes, p.status, p.is_published, p.is_rejected, p.processing_error,
+        `SELECT p.id, p.company_id, p.event_id, p.gallery_id, p.album_id, p.file_name, p.width, p.height, p.size_bytes, p.status, p.is_published, p.is_rejected, p.processing_error,
                 p.camera_label, p.editor_id, p.thumb_key, p.edited_key IS NOT NULL AS has_edit, p.created_at, p.deleted_at,
                 m.blur_score, m.is_blurry, m.duplicate_of, m.eyes_closed, m.faces_count, m.category, m.tags,
                 (SELECT COUNT(*) FROM tblPhotoSelection s WHERE s.photo_id = p.id) AS selected_count,
