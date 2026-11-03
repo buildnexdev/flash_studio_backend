@@ -6,7 +6,8 @@ import jwt from 'jsonwebtoken';
 import { config } from '../config/env.js';
 import { applyPageRules, matchPageRequest, type PageRule } from '../config/pages.js';
 import { ROLE_LEVEL, primaryRole, type Permission, type RoleCode } from '../config/rbac.js';
-import { currentDatabaseKey, query, queryOne } from '../db/pool.js';
+import { currentDatabaseKey, currentStudioSlug, execute, query, queryOne, runInTenant } from '../db/pool.js';
+import { resolveTenant } from '../modules/companies/companies.service.js';
 import { forbidden, unauthorized } from '../utils/errors.js';
 
 export interface AuthUser {
@@ -15,6 +16,9 @@ export interface AuthUser {
     email: string | null;
     phone: string | null;
     companyId: number | null;
+    companyName: string | null;
+    companySlug: string | null;
+    companyLogoUrl: string | null;
     roles: RoleCode[];
     /** tblUser.is_admin = 1 (or Super Admin): may manage other users' page access. */
     isAdmin: boolean;
@@ -54,13 +58,47 @@ export async function loadAuthUser(userId: number): Promise<AuthUser | null> {
     const hit = cache.get(key);
     if (hit && hit.expires > Date.now()) return hit.user;
 
-    const row = await queryOne<{ id: number; company_id: number | null; name: string; email: string | null; phone: string | null; status: string; token_version: number; is_admin: number; customer_id: number | null }>(
-        `SELECT u.id, u.company_id, u.name, u.email, u.phone, u.status, u.token_version, u.is_admin, c.id AS customer_id
-           FROM tblUser u LEFT JOIN tblCustomer c ON c.user_id = u.id AND c.deleted_at IS NULL
-          WHERE u.id = ? AND u.deleted_at IS NULL`,
+    const row = await queryOne<{
+        id: number;
+        u_company_id: number | null;
+        company_id: number | null;
+        company_name: string | null;
+        company_slug: string | null;
+        company_logo_url: string | null;
+        name: string;
+        email: string | null;
+        phone: string | null;
+        status: string;
+        token_version: number;
+        is_admin: number;
+        customer_id: number | null;
+    }>(
+        `SELECT u.id,
+                u.company_id AS u_company_id,
+                COALESCE(u.company_id, ur.company_id, comp_owner.companyID, staff.company_id) AS company_id,
+                COALESCE(comp.name, comp_owner.name, staff_comp.name) AS company_name,
+                COALESCE(comp.slug, comp_owner.slug, staff_comp.slug) AS company_slug,
+                COALESCE(comp.logo_url, comp_owner.logo_url, staff_comp.logo_url) AS company_logo_url,
+                u.name, u.email, u.phone, u.status, u.token_version, u.is_admin, c.id AS customer_id
+           FROM tblUser u
+      LEFT JOIN tblUserRole ur ON ur.user_id = u.id
+      LEFT JOIN tblCompany comp ON comp.companyID = COALESCE(u.company_id, ur.company_id)
+      LEFT JOIN tblCompany comp_owner ON (u.email IS NOT NULL AND (comp_owner.owner_email = u.email OR comp_owner.email = u.email))
+                                       OR (u.phone IS NOT NULL AND comp_owner.phone IS NOT NULL AND RIGHT(REPLACE(comp_owner.phone, ' ', ''), 10) = RIGHT(REPLACE(u.phone, ' ', ''), 10))
+                                       OR (u.name IS NOT NULL AND comp_owner.owner_name IS NOT NULL AND LOWER(TRIM(comp_owner.owner_name)) = LOWER(TRIM(u.name)))
+      LEFT JOIN tblStaff staff ON staff.user_id = u.id
+      LEFT JOIN tblCompany staff_comp ON staff_comp.companyID = staff.company_id
+      LEFT JOIN tblCustomer c ON c.user_id = u.id AND c.deleted_at IS NULL
+          WHERE u.id = ? AND u.deleted_at IS NULL
+          LIMIT 1`,
         [userId],
     );
     if (!row || row.status !== 'ACTIVE') return null;
+
+    if (row.company_id && !row.u_company_id) {
+        execute('UPDATE tblUser SET company_id = ? WHERE userID = ? AND company_id IS NULL', [row.company_id, userId]).catch(() => {});
+        execute('UPDATE tblUserRole SET company_id = ? WHERE user_id = ? AND company_id IS NULL', [row.company_id, userId]).catch(() => {});
+    }
 
     const perms = await query<{ role: RoleCode; permission: Permission | null }>(
         `SELECT r.code AS role, p.code AS permission
@@ -77,6 +115,9 @@ export async function loadAuthUser(userId: number): Promise<AuthUser | null> {
     const user: AuthUser = {
         id: row.id,
         companyId: row.company_id,
+        companyName: row.company_name ?? null,
+        companySlug: row.company_slug ?? null,
+        companyLogoUrl: row.company_logo_url ?? null,
         name: row.name,
         email: row.email,
         phone: row.phone,
@@ -100,6 +141,16 @@ export async function userFromAccessToken(token: string): Promise<AuthUser | nul
     try {
         const payload = jwt.verify(token, config.JWT_SECRET, { issuer: 'photolab' }) as AccessPayload;
         if (payload.typ !== 'access') return null;
+        if (payload.sid && !currentStudioSlug()) {
+            const scope = await resolveTenant(payload.sid).catch(() => null);
+            if (scope) {
+                return runInTenant(scope, async () => {
+                    const user = await loadAuthUser(Number(payload.sub));
+                    if (!user || user.tokenVersion !== payload.tv) return null;
+                    return user;
+                });
+            }
+        }
         const user = await loadAuthUser(Number(payload.sub));
         if (!user || user.tokenVersion !== payload.tv) return null;
         return user;
@@ -117,6 +168,13 @@ function bearer(req: Request): string | null {
 export async function authenticate(req: Request, _res: Response, next: NextFunction): Promise<void> {
     const token = bearer(req);
     if (!token) return next(unauthorized());
+    const payload = jwt.decode(token) as AccessPayload | null;
+    if (payload?.sid && !currentStudioSlug()) {
+        const scope = await resolveTenant(payload.sid).catch(() => null);
+        if (scope) {
+            return runInTenant(scope, () => authenticate(req, _res, next));
+        }
+    }
     const user = await userFromAccessToken(token).catch(() => null);
     if (!user) return next(unauthorized('Your session has expired. Please sign in again.'));
     req.user = user;
@@ -131,6 +189,13 @@ export async function authenticate(req: Request, _res: Response, next: NextFunct
 export async function optionalAuth(req: Request, _res: Response, next: NextFunction): Promise<void> {
     const token = bearer(req);
     if (token) {
+        const payload = jwt.decode(token) as AccessPayload | null;
+        if (payload?.sid && !currentStudioSlug()) {
+            const scope = await resolveTenant(payload.sid).catch(() => null);
+            if (scope) {
+                return runInTenant(scope, () => optionalAuth(req, _res, next));
+            }
+        }
         const user = await userFromAccessToken(token).catch(() => null);
         if (user) req.user = user;
     }
@@ -170,6 +235,9 @@ export function serializeUser(user: AuthUser) {
         email: user.email,
         phone: user.phone,
         companyId: user.companyId,
+        companyName: user.companyName,
+        companySlug: user.companySlug,
+        companyLogoUrl: user.companyLogoUrl,
         roles: user.roles,
         isAdmin: user.isAdmin,
         roleLevel: primaryRole(user.roles) ? ROLE_LEVEL[primaryRole(user.roles)!] : null,

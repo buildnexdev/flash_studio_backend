@@ -118,6 +118,40 @@ export function aliasPrimaryKeyFields(rows: unknown): void {
 
 type SqlConn = Pick<Connection, 'query'>;
 
+/** Current single-column primary key for each table in the selected database. */
+export async function loadPrimaryKeyColumns(conn: SqlConn): Promise<Map<string, string>> {
+    const [rows] = await conn.query<RowDataPacket[]>(
+        `SELECT TABLE_NAME, COLUMN_NAME
+           FROM information_schema.STATISTICS
+          WHERE TABLE_SCHEMA = DATABASE() AND INDEX_NAME = 'PRIMARY'`,
+    );
+    const grouped = new Map<string, string[]>();
+    for (const row of rows) {
+        const table = String(row.TABLE_NAME).toLowerCase();
+        const columns = grouped.get(table) ?? [];
+        columns.push(String(row.COLUMN_NAME));
+        grouped.set(table, columns);
+    }
+    const map = new Map<string, string>();
+    for (const [table, columns] of grouped) {
+        if (columns.length === 1) map.set(table, columns[0]);
+    }
+    return map;
+}
+
+/**
+ * Migrations were written when every primary key was named `id`.
+ * After renamePrimaryKeys, REFERENCES tblCustomer (id) must target customerID.
+ * Tables that still use `id` are left unchanged, so a fresh database still migrates.
+ */
+export function rewriteReferencedPrimaryKeys(sql: string, pkByTable: Map<string, string>): string {
+    return sql.replace(/\bREFERENCES\s+(`?)(tbl[A-Za-z0-9_]+)\1\s*\(\s*`?id`?\s*\)/gi, (full, quote: string, table: string) => {
+        const column = pkByTable.get(table.toLowerCase());
+        if (!column || column.toLowerCase() === 'id') return full;
+        return `REFERENCES ${quote}${table}${quote} (${column})`;
+    });
+}
+
 interface FkRow extends RowDataPacket {
     CONSTRAINT_NAME: string;
     TABLE_NAME: string;

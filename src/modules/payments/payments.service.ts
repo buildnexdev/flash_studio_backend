@@ -78,10 +78,11 @@ async function amountDue(customerId: number, target: { bookingId?: number; order
 export async function createPayment(user: AuthUser, target: { bookingId?: number; orderId?: number; purpose?: 'ADVANCE' | 'BALANCE' }, ctx: AuditContext) {
     if (!user.customerId) throw forbidden('A customer account is required to pay.');
     const due = await amountDue(user.customerId, target);
+    const companyId = user.companyId ?? (await queryOne<{ company_id: number | null }>('SELECT company_id FROM tblCustomer WHERE id = ?', [user.customerId]))?.company_id ?? 1;
     const paymentNo = await nextNumber('payment');
     const res = await execute(
-        'INSERT INTO tblPayment (payment_no, customer_id, booking_id, order_id, purpose, amount, currency, provider) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-        [paymentNo, user.customerId, due.bookingId, due.orderId, due.purpose, due.amount, config.CURRENCY, paymentProvider.name],
+        'INSERT INTO tblPayment (company_id, payment_no, customer_id, booking_id, order_id, purpose, amount, currency, provider) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [companyId, paymentNo, user.customerId, due.bookingId, due.orderId, due.purpose, due.amount, config.CURRENCY, paymentProvider.name],
     );
     let providerOrderId: string;
     try {
@@ -183,9 +184,10 @@ async function createInvoice(conn: PoolConnection, p: PaymentRow, description: s
         : [{ description: description.charAt(0).toUpperCase() + description.slice(1), quantity: 1, unit_price: p.amount, total: p.amount }];
     const tax = inclusiveTax(Number(p.amount), taxPercent);
     const invoiceNo = await nextNumber('invoice', conn);
+    const companyId = (await queryOne<{ company_id: number | null }>('SELECT company_id FROM tblPayment WHERE id = ?', [p.id], conn))?.company_id ?? 1;
     await execute(
-        'INSERT INTO tblInvoice (invoice_no, customer_id, payment_id, booking_id, order_id, description, subtotal, tax, total, line_items) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [invoiceNo, p.customer_id, p.id, p.booking_id, p.order_id, description.slice(0, 255), Number(p.amount) - tax, tax, p.amount, json(lines)],
+        'INSERT INTO tblInvoice (company_id, invoice_no, customer_id, payment_id, booking_id, order_id, description, subtotal, tax, total, line_items) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [companyId, invoiceNo, p.customer_id, p.id, p.booking_id, p.order_id, description.slice(0, 255), Number(p.amount) - tax, tax, p.amount, json(lines)],
         conn,
     );
 }
@@ -285,10 +287,11 @@ export async function recordOfflinePayment(input: { bookingId?: number; orderId?
     } else {
         throw badRequest('Specify a booking or an order.');
     }
+    const companyId = actor.companyId ?? (await queryOne<{ company_id: number | null }>('SELECT company_id FROM tblCustomer WHERE id = ?', [customerId]))?.company_id ?? 1;
     const paymentNo = await nextNumber('payment');
     const res = await execute(
-        "INSERT INTO tblPayment (payment_no, customer_id, booking_id, order_id, purpose, amount, currency, provider, provider_order_id, method, meta, status) VALUES (?, ?, ?, ?, ?, ?, ?, 'offline', ?, ?, ?, 'PROCESSING')",
-        [paymentNo, customerId, input.bookingId ?? null, input.orderId ?? null, purpose, input.amount, config.CURRENCY, `offline_${paymentNo}`, input.method, json({ reference: input.reference ?? null })],
+        "INSERT INTO tblPayment (company_id, payment_no, customer_id, booking_id, order_id, purpose, amount, currency, provider, provider_order_id, method, meta, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'offline', ?, ?, ?, 'PROCESSING')",
+        [companyId, paymentNo, customerId, input.bookingId ?? null, input.orderId ?? null, purpose, input.amount, config.CURRENCY, `offline_${paymentNo}`, input.method, json({ reference: input.reference ?? null })],
     );
     return applySuccess(res.insertId, input.reference ?? null, input.method, ctx, actor.id);
 }
@@ -316,6 +319,7 @@ export async function getPayment(id: number, actor?: AuthUser) {
         [id],
     );
     if (!p) throw notFound('Payment');
+    if (actor?.companyId && p.company_id && actor.companyId !== p.company_id) throw notFound('Payment');
     if (actor && !hasPermission(actor, 'payments.view') && actor.customerId !== p.customer_id) throw notFound('Payment');
     return p;
 }
@@ -327,6 +331,7 @@ export interface PaymentFilter {
     status?: PaymentStatus;
     purpose?: PaymentPurpose;
     customerId?: number;
+    companyId?: number;
     from?: string;
     to?: string;
     sort?: string;
@@ -336,6 +341,10 @@ export interface PaymentFilter {
 export async function listPayments(f: PaymentFilter) {
     const where = ['1=1'];
     const params: unknown[] = [];
+    if (f.companyId) {
+        where.push('p.company_id = ?');
+        params.push(f.companyId);
+    }
     if (f.search) {
         where.push('(p.payment_no LIKE ? OR p.provider_payment_id LIKE ? OR c.name LIKE ? OR c.phone LIKE ?)');
         const t = likeTerm(f.search);

@@ -14,6 +14,7 @@ import { forbidden } from '../../utils/errors.js';
 import { pageQuery } from '../../utils/pagination.js';
 import { hhmm, idParam, optionalText, ymd } from '../../utils/schemas.js';
 import { auditCtx } from '../audit/audit.service.js';
+import { prepareEventGallery } from '../photos/photos.service.js';
 import * as events from './events.service.js';
 
 const eventBody = z.object({
@@ -41,7 +42,7 @@ router.get(
     validate(z.object({ date: ymd, start: hhmm, end: hhmm, excludeEventId: z.coerce.number().int().positive().optional(), excludeBookingId: z.coerce.number().int().positive().optional() }), 'query'),
     asyncHandler(async (req, res) => {
         const q = req.query as unknown as { date: string; start?: string | null; end?: string | null; excludeEventId?: number; excludeBookingId?: number };
-        ok(res, await events.checkAvailability({ eventDate: q.date, startTime: q.start, endTime: q.end, excludeEventId: q.excludeEventId, excludeBookingId: q.excludeBookingId }));
+        ok(res, await events.checkAvailability({ eventDate: q.date, startTime: q.start, endTime: q.end, excludeEventId: q.excludeEventId, excludeBookingId: q.excludeBookingId, companyId: req.user?.companyId }));
     }),
 );
 
@@ -57,6 +58,9 @@ router.get(
             if (hasPermission(req.user, 'events.assigned', 'photos.upload', 'photos.edit')) q.assignedTo = req.user!.id;
             else if (req.user!.customerId) q.customerId = req.user!.customerId;
             else throw forbidden();
+        }
+        if (req.user?.companyId) {
+            q.companyId = req.user.companyId;
         }
         ok(res, await events.listEvents(q));
     }),
@@ -82,8 +86,9 @@ router.post(
     requirePermission('events.manage'),
     validate(eventBody),
     asyncHandler(async (req, res) => {
-        const id = await events.createEvent(req.body, auditCtx(req));
-        created(res, await events.getEvent(id), 'Event created');
+        const payload = { ...req.body, companyId: req.user?.companyId };
+        const id = await events.createEvent(payload, auditCtx(req));
+        created(res, await events.getEvent(id, req.user?.companyId), 'Event created');
     }),
 );
 
@@ -96,7 +101,7 @@ router.get(
     asyncHandler(async (req, res) => {
         const id = Number(req.params.id);
         await events.assertEventAccess(req.user!, id, 'view');
-        const event = await events.getEvent(id);
+        const event = await events.getEvent(id, req.user?.companyId);
         if (!hasPermission(req.user, 'events.view', 'events.manage', 'events.assigned')) {
             // Customers see their event without internal staff/revenue detail
             const { staff, revenue, notes, ...rest } = event as Record<string, unknown>;
@@ -152,10 +157,28 @@ for (const action of Object.keys(ACTION_MESSAGES) as events.EventAction[]) {
         `/:id/${action}`,
         validate(idParam, 'params'),
         asyncHandler(async (req, res) => {
-            ok(res, await events.transitionEvent(Number(req.params.id), action, req.user!, auditCtx(req)), ACTION_MESSAGES[action]);
+            const id = Number(req.params.id);
+            const event = await events.transitionEvent(id, action, req.user!, auditCtx(req));
+            if (action === 'start') await prepareEventGallery(id);
+            ok(res, event, ACTION_MESSAGES[action]);
         }),
     );
 }
+
+/*
+ * Publish ready previews and re-queue unfinished uploads for the guest QR.
+*/
+router.post(
+    '/:id/sync-photos',
+    requirePermission('events.manage', 'photos.manage'),
+    validate(idParam, 'params'),
+    asyncHandler(async (req, res) => {
+        const id = Number(req.params.id);
+        await events.assertEventAccess(req.user!, id, 'work');
+        const queued = await prepareEventGallery(id);
+        ok(res, { queued }, queued ? `Re-queued ${queued} photo(s) for the guest gallery` : 'Guest gallery photos are up to date');
+    }),
+);
 
 /*
  * UPLOAD A COVER IMAGE FOR THE EVENT
@@ -184,6 +207,11 @@ router.post(
             userId: z.coerce.number().int().positive(),
             role: z.enum(['PHOTOGRAPHER', 'ASSISTANT', 'EDITOR', 'VIDEOGRAPHER', 'MANAGER', 'DELIVERY']).default('PHOTOGRAPHER'),
             cameraLabel: optionalText(40),
+            payBasis: z.enum(['DAY_RATE', 'SHARE', 'COMMISSION', 'FLAT', 'NONE']).optional(),
+            sharePct: z.coerce.number().min(0).max(100).nullable().optional(),
+            commissionPct: z.coerce.number().min(0).max(100).nullable().optional(),
+            dayRateOverride: z.coerce.number().int().min(0).nullable().optional(),
+            flatAmount: z.coerce.number().int().min(0).nullable().optional(),
         }),
     ),
     asyncHandler(async (req, res) => {

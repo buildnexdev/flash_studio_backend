@@ -38,3 +38,41 @@ export function decrypt(payload: string): string {
     decipher.setAuthTag(tag);
     return Buffer.concat([decipher.update(data), decipher.final()]).toString('utf8');
 }
+
+/* ---------------- API Payload Encryption (Network Tab Protection) ---------------- */
+
+const payloadKey = () =>
+    createHash('sha256')
+        .update(config.API_CRYPTO_SECRET || config.APP_SECRET || 'photolab-secure-payload-encryption-secret-key-2026!')
+        .digest();
+
+/**
+ * Encrypt any JavaScript object or value into an AES-256-CBC hex string (iv:ciphertext).
+ */
+export function encryptPayload(data: unknown): string {
+    const json = typeof data === 'string' ? data : JSON.stringify(data);
+    const iv = randomBytes(16);
+    const cipher = createCipheriv('aes-256-cbc', payloadKey(), iv);
+    let encrypted = cipher.update(json, 'utf8', 'hex');
+    encrypted += cipher.final('hex');
+    return `${iv.toString('hex')}:${encrypted}`;
+}
+
+/**
+ * Decrypt an AES-256-CBC hex string (iv:ciphertext) back into a parsed JavaScript object or value.
+ */
+export function decryptPayload<T = any>(payload: string): T {
+    if (!payload || typeof payload !== 'string' || !payload.includes(':')) {
+        throw new Error('Invalid encrypted payload format');
+    }
+    const [ivHex, encHex] = payload.split(':');
+    const iv = Buffer.from(ivHex, 'hex');
+    const decipher = createDecipheriv('aes-256-cbc', payloadKey(), iv);
+    let decrypted = decipher.update(encHex, 'hex', 'utf8');
+    decrypted += decipher.final('utf8');
+    try {
+        return JSON.parse(decrypted) as T;
+    } catch {
+        return decrypted as unknown as T;
+    }
+}

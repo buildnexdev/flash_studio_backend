@@ -42,6 +42,7 @@ router.get(
     ),
     asyncHandler(async (req, res) => {
         const q = req.query as unknown as payments.PaymentFilter;
+        if (req.user?.companyId) q.companyId = req.user.companyId;
         if (!req.user!.permissions.has('payments.view')) {
             if (!req.user!.customerId) throw forbidden();
             q.customerId = req.user!.customerId;

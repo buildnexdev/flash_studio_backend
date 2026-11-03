@@ -36,17 +36,23 @@ export interface ServiceInput {
     sortOrder: number;
 }
 
-export const listServices = (activeOnly = false) =>
-    query(`SELECT * FROM tblService WHERE deleted_at IS NULL ${activeOnly ? 'AND is_active = 1' : ''} ORDER BY sort_order, name`);
+export const listServices = (activeOnly = false, companyId?: number | null) => {
+    const where = ['deleted_at IS NULL'];
+    const params: unknown[] = [];
+    if (activeOnly) where.push('is_active = 1');
+    if (companyId) { where.push('company_id = ?'); params.push(companyId); }
+    return query(`SELECT * FROM tblService WHERE ${where.join(' AND ')} ORDER BY sort_order, name`, params);
+};
 
 export async function saveService(id: number | null, input: ServiceInput, ctx: AuditContext) {
     const slug = await uniqueSlug('services', input.name, id ?? undefined);
+    const companyId = ctx.companyId ?? 1;
     const values = [input.name, slug, input.summary ?? null, input.description ?? null, input.icon ?? null, input.basePrice, input.isActive ? 1 : 0, input.sortOrder];
     if (id) {
         const res = await execute('UPDATE tblService SET name = ?, slug = ?, summary = ?, description = ?, icon = ?, base_price = ?, is_active = ?, sort_order = ? WHERE id = ? AND deleted_at IS NULL', [...values, id]);
         if (!res.affectedRows) throw notFound('Service');
     } else {
-        id = (await execute('INSERT INTO tblService (name, slug, summary, description, icon, base_price, is_active, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', values)).insertId;
+        id = (await execute('INSERT INTO tblService (company_id, name, slug, summary, description, icon, base_price, is_active, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [companyId, ...values])).insertId;
     }
     await audit(ctx, 'SERVICE_SAVED', 'catalog', id, { name: input.name });
     return queryOne('SELECT * FROM tblService WHERE id = ?', [id]);
@@ -75,16 +81,23 @@ export interface PackageInput {
     sortOrder: number;
 }
 
-export const listPackages = (activeOnly = false) =>
-    query(
+export const listPackages = (activeOnly = false, companyId?: number | null) => {
+    const where = ['p.deleted_at IS NULL'];
+    const params: unknown[] = [];
+    if (activeOnly) where.push('p.is_active = 1');
+    if (companyId) { where.push('p.company_id = ?'); params.push(companyId); }
+    return query(
         `SELECT p.*, s.name AS service_name FROM tblPackage p LEFT JOIN tblService s ON s.id = p.service_id
-          WHERE p.deleted_at IS NULL ${activeOnly ? 'AND p.is_active = 1' : ''} ORDER BY p.sort_order, p.price`,
+          WHERE ${where.join(' AND ')} ORDER BY p.sort_order, p.price`,
+        params,
     );
+};
 
 export const getPackage = (id: number, db: Db = pool) => queryOne('SELECT * FROM tblPackage WHERE id = ? AND deleted_at IS NULL', [id], db);
 
 export async function savePackage(id: number | null, input: PackageInput, ctx: AuditContext) {
     const slug = await uniqueSlug('packages', input.name, id ?? undefined);
+    const companyId = ctx.companyId ?? 1;
     const values = [
         input.serviceId ?? null,
         input.name,
@@ -111,9 +124,9 @@ export async function savePackage(id: number | null, input: PackageInput, ctx: A
     } else {
         id = (
             await execute(
-                `INSERT INTO tblPackage (service_id, name, slug, description, price, advance_percent, features, photo_count, includes_digital, includes_album, duration_hours, is_featured, is_active, sort_order)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                values,
+                `INSERT INTO tblPackage (company_id, service_id, name, slug, description, price, advance_percent, features, photo_count, includes_digital, includes_album, duration_hours, is_featured, is_active, sort_order)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [companyId, ...values],
             )
         ).insertId;
     }
@@ -142,18 +155,24 @@ export interface CouponInput {
     isActive: boolean;
 }
 
-export const listCoupons = () => query('SELECT * FROM tblCoupon WHERE deleted_at IS NULL ORDER BY id DESC');
+export const listCoupons = (companyId?: number | null) => {
+    const where = ['deleted_at IS NULL'];
+    const params: unknown[] = [];
+    if (companyId) { where.push('company_id = ?'); params.push(companyId); }
+    return query(`SELECT * FROM tblCoupon WHERE ${where.join(' AND ')} ORDER BY id DESC`, params);
+};
 
 export async function saveCoupon(id: number | null, input: CouponInput, ctx: AuditContext) {
     if (input.type === 'PERCENT' && input.value > 100) throw badRequest('A percentage coupon cannot exceed 100%.', [{ field: 'value', message: 'Max 100' }]);
     const code = input.code.trim().toUpperCase();
+    const companyId = ctx.companyId ?? 1;
     const dup = await queryOne('SELECT id FROM tblCoupon WHERE code = ? AND id <> ? AND deleted_at IS NULL', [code, id ?? 0]);
     if (dup) throw conflict('A coupon with this code already exists.');
     const values = [code, input.description ?? null, input.type, input.value, input.minAmount, input.maxDiscount ?? null, input.appliesTo, input.startsAt ?? null, input.endsAt ?? null, input.usageLimit ?? null, input.isActive ? 1 : 0];
     if (id) {
         await execute('UPDATE tblCoupon SET code = ?, description = ?, type = ?, value = ?, min_amount = ?, max_discount = ?, applies_to = ?, starts_at = ?, ends_at = ?, usage_limit = ?, is_active = ? WHERE id = ?', [...values, id]);
     } else {
-        id = (await execute('INSERT INTO tblCoupon (code, description, type, value, min_amount, max_discount, applies_to, starts_at, ends_at, usage_limit, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', values)).insertId;
+        id = (await execute('INSERT INTO tblCoupon (company_id, code, description, type, value, min_amount, max_discount, applies_to, starts_at, ends_at, usage_limit, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [companyId, ...values])).insertId;
     }
     await audit(ctx, 'COUPON_SAVED', 'catalog', id, { code });
     return queryOne('SELECT * FROM tblCoupon WHERE id = ?', [id]);
@@ -196,8 +215,13 @@ export async function evaluateCoupon(codeRaw: string, amount: number, scope: 'OR
 
 /* ---------------- Portfolio & testimonials ---------------- */
 
-export const listPortfolio = (category?: string) =>
-    query(`SELECT id, title, category, description, image_key, is_featured, sort_order, created_at FROM tblPortfolioItem WHERE deleted_at IS NULL ${category ? 'AND category = ?' : ''} ORDER BY is_featured DESC, sort_order, id DESC`, category ? [category] : []);
+export const listPortfolio = (category?: string, companyId?: number | null) => {
+    const where = ['deleted_at IS NULL'];
+    const params: unknown[] = [];
+    if (category) { where.push('category = ?'); params.push(category); }
+    if (companyId) { where.push('company_id = ?'); params.push(companyId); }
+    return query(`SELECT id, title, category, description, image_key, is_featured, sort_order, created_at FROM tblPortfolioItem WHERE ${where.join(' AND ')} ORDER BY is_featured DESC, sort_order, id DESC`, params);
+};
 
 export async function addPortfolioItem(file: Buffer, input: { title: string; category: string; description?: string | null; isFeatured: boolean }, ctx: AuditContext) {
     try {
@@ -207,7 +231,8 @@ export async function addPortfolioItem(file: Buffer, input: { title: string; cat
     }
     const key = `public/portfolio/${uuid()}.jpg`;
     await storage.put(key, await normalizeJpeg(file, 2000, 85), 'image/jpeg');
-    const id = (await execute('INSERT INTO tblPortfolioItem (title, category, description, image_key, is_featured) VALUES (?, ?, ?, ?, ?)', [input.title, input.category, input.description ?? null, key, input.isFeatured ? 1 : 0])).insertId;
+    const companyId = ctx.companyId ?? 1;
+    const id = (await execute('INSERT INTO tblPortfolioItem (company_id, title, category, description, image_key, is_featured) VALUES (?, ?, ?, ?, ?, ?)', [companyId, input.title, input.category, input.description ?? null, key, input.isFeatured ? 1 : 0])).insertId;
     await audit(ctx, 'PORTFOLIO_ADDED', 'website', id, { title: input.title });
     return queryOne('SELECT id, title, category, description, is_featured, sort_order, created_at FROM tblPortfolioItem WHERE id = ?', [id]);
 }
@@ -234,13 +259,19 @@ export async function portfolioImageUrl(id: number): Promise<string> {
     return storage.signedUrl(row.image_key, { ttlSeconds: 3600 });
 }
 
-export const listTestimonials = (publishedOnly = false) =>
-    query(`SELECT * FROM tblTestimonial WHERE deleted_at IS NULL ${publishedOnly ? 'AND is_published = 1' : ''} ORDER BY sort_order, id DESC`);
+export const listTestimonials = (publishedOnly = false, companyId?: number | null) => {
+    const where = ['deleted_at IS NULL'];
+    const params: unknown[] = [];
+    if (publishedOnly) where.push('is_published = 1');
+    if (companyId) { where.push('company_id = ?'); params.push(companyId); }
+    return query(`SELECT * FROM tblTestimonial WHERE ${where.join(' AND ')} ORDER BY sort_order, id DESC`, params);
+};
 
 export async function saveTestimonial(id: number | null, input: { name: string; eventLabel?: string | null; quote: string; rating: number; isPublished: boolean; sortOrder: number }, ctx: AuditContext) {
+    const companyId = ctx.companyId ?? 1;
     const values = [input.name, input.eventLabel ?? null, input.quote, input.rating, input.isPublished ? 1 : 0, input.sortOrder];
     if (id) await execute('UPDATE tblTestimonial SET name = ?, event_label = ?, quote = ?, rating = ?, is_published = ?, sort_order = ? WHERE id = ?', [...values, id]);
-    else id = (await execute('INSERT INTO tblTestimonial (name, event_label, quote, rating, is_published, sort_order) VALUES (?, ?, ?, ?, ?, ?)', values)).insertId;
+    else id = (await execute('INSERT INTO tblTestimonial (company_id, name, event_label, quote, rating, is_published, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)', [companyId, ...values])).insertId;
     await audit(ctx, 'TESTIMONIAL_SAVED', 'website', id);
     return queryOne('SELECT * FROM tblTestimonial WHERE id = ?', [id]);
 }

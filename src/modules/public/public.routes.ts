@@ -20,6 +20,7 @@ import { createEnquiry } from '../bookings/bookings.service.js';
 import { listPackages, listPortfolio, listServices, listTestimonials, portfolioImageUrl } from '../catalog/catalog.service.js';
 import { notifyStaff } from '../notifications/notifications.service.js';
 import { getSetting } from '../settings/settings.service.js';
+import { createShopOrder, getShopOrder } from '../orders/shop-orders.service.js';
 
 const router = Router();
 
@@ -63,6 +64,58 @@ router.get(
 router.get('/services', asyncHandler(async (_req, res) => { ok(res, await listServices(true)); }));
 router.get('/packages', asyncHandler(async (_req, res) => { ok(res, await listPackages(true)); }));
 router.get('/testimonials', asyncHandler(async (_req, res) => { ok(res, await listTestimonials(true)); }));
+
+router.get(
+    '/products',
+    asyncHandler(async (_req, res) => {
+        const website = await getSetting('website');
+        const prods = (website as any)?.products;
+        if (Array.isArray(prods) && prods.length > 0) {
+            ok(res, prods);
+        } else {
+            ok(res, DEFAULT_SHOP_PRODUCTS);
+        }
+    }),
+);
+
+router.post(
+    '/shop-orders',
+    validate(
+        z.object({
+            id: z.string().optional(),
+            customer: z.object({
+                name: z.string().trim().min(2).max(120),
+                mobile: z.string().trim().min(8).max(20),
+                email: z.string().trim().email(),
+                address: z.string().trim().min(3),
+                city: z.string().trim().min(2),
+                state: z.string().trim().min(2),
+                pincode: z.string().trim().min(4),
+                instructions: z.string().optional(),
+            }),
+            items: z.array(z.any()).min(1, 'Add at least one item'),
+            subtotal: z.number().min(0),
+            customization: z.number().min(0).default(0),
+            delivery: z.number().min(0).default(0),
+            discount: z.number().min(0).optional().default(0),
+            total: z.number().min(0),
+            payment: z.string().default('UPI / online payment'),
+            paymentStatus: z.enum(['Pending', 'Paid']).optional().default('Pending'),
+            status: z.string().optional().default('New Order'),
+        }),
+    ),
+    asyncHandler(async (req, res) => {
+        const order = await createShopOrder(req.body);
+        created(res, order, 'Order placed successfully');
+    }),
+);
+
+router.get(
+    '/shop-orders/:id',
+    asyncHandler(async (req, res) => {
+        ok(res, await getShopOrder(req.params.id));
+    }),
+);
 
 router.get(
     '/portfolio',

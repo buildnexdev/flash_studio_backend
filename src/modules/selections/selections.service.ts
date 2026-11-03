@@ -23,7 +23,8 @@ async function visiblePhoto(access: GalleryAccess, photoId: number) {
 
 export async function toggleFavourite(access: GalleryAccess, user: AuthUser, photoId: number, on: boolean) {
     await visiblePhoto(access, photoId);
-    if (on) await execute('INSERT IGNORE INTO tblPhotoFavourite (photo_id, user_id) VALUES (?, ?)', [photoId, user.id]);
+    const companyId = access.gallery.company_id ?? 1;
+    if (on) await execute('INSERT IGNORE INTO tblPhotoFavourite (company_id, photo_id, user_id) VALUES (?, ?, ?)', [companyId, photoId, user.id]);
     else await execute('DELETE FROM tblPhotoFavourite WHERE photo_id = ? AND user_id = ?', [photoId, user.id]);
     return { photoId, favourite: on };
 }
@@ -45,7 +46,8 @@ async function assertCanSelect(access: GalleryAccess, user: AuthUser) {
 export async function toggleSelection(access: GalleryAccess, user: AuthUser, photoId: number, on: boolean) {
     await assertCanSelect(access, user);
     const p = await visiblePhoto(access, photoId);
-    if (on) await execute('INSERT IGNORE INTO tblPhotoSelection (event_id, photo_id, customer_id) VALUES (?, ?, ?)', [p.event_id, photoId, user.customerId]);
+    const companyId = access.gallery.company_id ?? 1;
+    if (on) await execute('INSERT IGNORE INTO tblPhotoSelection (company_id, event_id, photo_id, customer_id) VALUES (?, ?, ?, ?)', [companyId, p.event_id, photoId, user.customerId]);
     else await execute('DELETE FROM tblPhotoSelection WHERE photo_id = ? AND customer_id = ?', [photoId, user.customerId]);
     const count = await queryOne<{ n: number }>('SELECT COUNT(*) AS n FROM tblPhotoSelection WHERE event_id = ? AND customer_id = ?', [p.event_id, user.customerId]);
     return { photoId, selected: on, count: count?.n ?? 0 };
@@ -55,7 +57,8 @@ export async function addComment(access: GalleryAccess, user: AuthUser, photoId:
     await visiblePhoto(access, photoId);
     const isStaff = hasPermission(user, 'galleries.manage', 'photos.manage', 'photos.edit');
     if (!isStaff && !access.isOwner && !user.customerId) throw forbidden();
-    const res = await execute('INSERT INTO tblPhotoComment (photo_id, user_id, body, is_staff) VALUES (?, ?, ?, ?)', [photoId, user.id, body, isStaff ? 1 : 0]);
+    const companyId = access.gallery.company_id ?? ctx.companyId ?? 1;
+    const res = await execute('INSERT INTO tblPhotoComment (company_id, photo_id, user_id, body, is_staff) VALUES (?, ?, ?, ?, ?)', [companyId, photoId, user.id, body, isStaff ? 1 : 0]);
     await audit(ctx, 'PHOTO_COMMENT', 'photos', photoId);
     return queryOne('SELECT c.id, c.body, c.is_staff, c.created_at, u.name AS user_name, 1 AS mine FROM tblPhotoComment c JOIN tblUser u ON u.id = c.user_id WHERE c.id = ?', [res.insertId]);
 }
@@ -76,16 +79,17 @@ export async function mySelectionState(access: GalleryAccess, user: AuthUser | u
 
 export async function submitSelection(eventId: number, user: AuthUser, note: string | null, ctx: AuditContext) {
     if (!user.customerId) throw forbidden();
-    const e = await queryOne<{ customer_id: number; title: string }>('SELECT customer_id, title FROM tblEvent WHERE id = ? AND deleted_at IS NULL', [eventId]);
+    const e = await queryOne<{ customer_id: number; title: string; company_id: number }>('SELECT customer_id, title, company_id FROM tblEvent WHERE id = ? AND deleted_at IS NULL', [eventId]);
     if (!e || e.customer_id !== user.customerId) throw notFound('Event');
     const count = (await queryOne<{ n: number }>('SELECT COUNT(*) AS n FROM tblPhotoSelection WHERE event_id = ? AND customer_id = ?', [eventId, user.customerId]))?.n ?? 0;
     if (!count) throw badRequest('Select at least one photo before submitting.');
     const s = await submission(eventId, user.customerId);
     if (s && (s.status === 'SUBMITTED' || s.status === 'CONFIRMED')) throw conflict('Your selection has already been submitted.');
+    const companyId = e.company_id ?? 1;
     await execute(
-        `INSERT INTO tblSelectionSubmission (event_id, customer_id, status, photo_count, note, submitted_at) VALUES (?, ?, 'SUBMITTED', ?, ?, UTC_TIMESTAMP())
+        `INSERT INTO tblSelectionSubmission (company_id, event_id, customer_id, status, photo_count, note, submitted_at) VALUES (?, ?, ?, 'SUBMITTED', ?, ?, UTC_TIMESTAMP())
          ON DUPLICATE KEY UPDATE status = 'SUBMITTED', photo_count = VALUES(photo_count), note = VALUES(note), submitted_at = UTC_TIMESTAMP()`,
-        [eventId, user.customerId, count, note],
+        [companyId, eventId, user.customerId, count, note],
     );
     await audit(ctx, 'SELECTION_SUBMITTED', 'selections', eventId, { count });
     await notifyStaff(['galleries.manage'], { type: 'SELECTION_SUBMITTED', title: 'Photo selection submitted', body: `${user.name} selected ${count} photo(s) for ${e.title}.`, link: `/admin/events/${eventId}?tab=selection` });

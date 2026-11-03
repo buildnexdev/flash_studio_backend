@@ -15,7 +15,10 @@ import { customerEvents } from '../events/events.service.js';
 import { customerGalleries } from '../galleries/galleries.service.js';
 import { listNotifications, markRead } from '../notifications/notifications.service.js';
 import { dashboard, report, REPORT_TYPES, toCsv, type ReportType } from '../reports/reports.service.js';
-import { getSettings, settingSchemas, updateSetting, type SettingKey } from '../settings/settings.service.js';
+import { storage } from '../../lib/storage.js';
+import { imageUpload } from '../../lib/upload.js';
+import { getSetting, getSettings, settingSchemas, updateSetting, type SettingKey } from '../settings/settings.service.js';
+import { badRequest } from '../../utils/errors.js';
 
 /* ---------------- Notifications: /api/notifications ---------------- */
 
@@ -60,7 +63,9 @@ auditRouter.get(
         'query',
     ),
     asyncHandler(async (req, res) => {
-        ok(res, await listAudit(req.query as never));
+        const queryParams = { ...(req.query as Record<string, unknown>) };
+        if (req.user?.companyId) queryParams.companyId = req.user.companyId;
+        ok(res, await listAudit(queryParams as never));
     }),
 );
 
@@ -72,8 +77,35 @@ settingsRouter.use(authenticate);
 settingsRouter.get(
     '/',
     requirePermission('settings.manage', 'pricing.manage'),
-    asyncHandler(async (_req, res) => {
-        ok(res, await getSettings());
+    asyncHandler(async (req, res) => {
+        const settings = await getSettings(req.user?.companyId);
+        const logoKey = settings.gallery.watermarkLogoKey;
+        ok(res, {
+            ...settings,
+            gallery: {
+                ...settings.gallery,
+                watermarkLogoUrl: logoKey ? await storage.signedUrl(logoKey, { ttlSeconds: 3600 }).catch(() => null) : null,
+            },
+        });
+    }),
+);
+
+settingsRouter.post(
+    '/gallery/watermark-logo',
+    requirePermission('settings.manage'),
+    imageUpload.single('logo'),
+    asyncHandler(async (req, res) => {
+        const file = req.file;
+        if (!file?.buffer?.length) throw badRequest('Choose a logo image to upload.');
+        const ext = file.mimetype === 'image/png' ? 'png' : file.mimetype === 'image/webp' ? 'webp' : 'jpg';
+        const companyId = req.user?.companyId ?? 1;
+        const key = `settings/watermark-logo-c${companyId}.${ext}`;
+        const prev = await getSetting('gallery', companyId);
+        if (prev.watermarkLogoKey && prev.watermarkLogoKey !== key) await storage.delete(prev.watermarkLogoKey).catch(() => undefined);
+        await storage.put(key, file.buffer, file.mimetype);
+        const value = await updateSetting('gallery', { ...prev, watermarkLogoKey: key, watermarkUseLogo: true }, req.user!.id, companyId);
+        await audit(auditCtx(req), 'SETTINGS_UPDATED', 'settings', 'gallery', { watermarkLogo: true });
+        ok(res, { ...value, watermarkLogoUrl: await storage.signedUrl(key, { ttlSeconds: 3600 }) }, 'Company logo watermark saved');
     }),
 );
 
@@ -84,7 +116,13 @@ settingsRouter.put(
         const key = req.params.key as SettingKey;
         const allowed = key === 'pricing' || key === 'website' ? hasPermission(req.user, 'pricing.manage', 'settings.manage') : hasPermission(req.user, 'settings.manage');
         if (!allowed) throw forbidden();
-        const value = await updateSetting(key, req.body, req.user!.id);
+        let body = req.body;
+        const companyId = req.user?.companyId ?? 1;
+        if (key === 'gallery') {
+            const prev = await getSetting('gallery', companyId);
+            body = { ...prev, ...req.body, watermarkLogoKey: req.body.watermarkLogoKey ?? prev.watermarkLogoKey ?? null };
+        }
+        const value = await updateSetting(key, body, req.user!.id, companyId);
         await audit(auditCtx(req), 'SETTINGS_UPDATED', 'settings', key);
         ok(res, value, 'Settings saved');
     }),
@@ -100,7 +138,7 @@ reportsRouter.get(
     requirePermission('dashboard.view', 'reports.view'),
     validate(rangeQuery, 'query'),
     asyncHandler(async (req, res) => {
-        ok(res, await dashboard(req.query as never));
+        ok(res, await dashboard(req.query as never, req.user?.companyId));
     }),
 );
 
@@ -111,7 +149,7 @@ reportsRouter.get(
     validate(rangeQuery.extend({ format: z.enum(['json', 'csv']).default('json') }), 'query'),
     asyncHandler(async (req, res) => {
         const { format, ...range } = req.query as unknown as z.infer<typeof rangeQuery> & { format: 'json' | 'csv' };
-        const result = await report(req.params.type as ReportType, range);
+        const result = await report(req.params.type as ReportType, range, req.user?.companyId);
         if (format === 'csv') {
             await audit(auditCtx(req), 'REPORT_EXPORTED', 'reports', req.params.type, { range: result.range.label });
             res.setHeader('Content-Type', 'text/csv; charset=utf-8');

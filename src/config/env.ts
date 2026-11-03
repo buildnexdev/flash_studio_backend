@@ -17,11 +17,12 @@ const schema = z.object({
     JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),
     JWT_REFRESH_SECRET: z.string().min(32, 'JWT_REFRESH_SECRET must be at least 32 characters'),
     APP_SECRET: z.string().min(32, 'APP_SECRET must be at least 32 characters'),
+    API_CRYPTO_SECRET: z.string().default('photolab-secure-payload-encryption-secret-key-2026!'),
     ACCESS_TOKEN_TTL: z.string().default('15m'),
     REFRESH_TOKEN_DAYS: z.coerce.number().int().positive().default(30),
 
     FRONTEND_URL: z.string().url().default('http://localhost:5173'),
-    BACKEND_URL: z.string().url().default('http://localhost:4000'),
+    BACKEND_URL: z.string().url().default('http://localhost:4000').transform((value) => value.replace(/\/+$/, '')),
     CORS_ORIGINS: z.string().optional().default(''),
 
     STORAGE_DRIVER: z.enum(['local', 's3']).default('local'),
@@ -69,12 +70,17 @@ const schema = z.object({
     UPLOAD_CONCURRENCY: z.coerce.number().int().min(1).max(8).default(2),
 });
 
+const clean = (value?: string) => (value ?? '').trim().replace(/^['"]|['"]$/g, '');
+
 /** Accept common AWS / Render env names alongside our documented keys. */
 const envSource = {
     ...process.env,
-    AWS_ACCESS_KEY: process.env.AWS_ACCESS_KEY || process.env.AWS_ACCESS_KEY_ID || '',
-    AWS_SECRET_KEY: process.env.AWS_SECRET_KEY || process.env.AWS_SECRET_ACCESS_KEY || '',
-    AWS_BUCKET: process.env.AWS_BUCKET || process.env.AWS_S3_BUCKET || '',
+    NODE_ENV: process.env.NODE_ENV || (process.env.RENDER === 'true' ? 'production' : undefined),
+    AWS_ACCESS_KEY: clean(process.env.AWS_ACCESS_KEY) || clean(process.env.AWS_ACCESS_KEY_ID),
+    AWS_SECRET_KEY: clean(process.env.AWS_SECRET_KEY) || clean(process.env.AWS_SECRET_ACCESS_KEY),
+    AWS_BUCKET: clean(process.env.AWS_BUCKET) || clean(process.env.AWS_S3_BUCKET) || clean(process.env.S3_BUCKET) || clean(process.env.AWS_BUCKET_NAME),
+    AWS_REGION: clean(process.env.AWS_REGION) || clean(process.env.AWS_DEFAULT_REGION) || 'ap-south-1',
+    STORAGE_DRIVER: clean(process.env.STORAGE_DRIVER).toLowerCase() || undefined,
 };
 
 const parsed = schema.safeParse(envSource);
@@ -100,10 +106,15 @@ if (env.NODE_ENV === 'production') {
     }
 }
 
+const s3Ready = Boolean(env.AWS_BUCKET && env.AWS_ACCESS_KEY && env.AWS_SECRET_KEY);
+
 export const config = {
     ...env,
     isProd: env.NODE_ENV === 'production',
     isTest: env.NODE_ENV === 'test',
+    /** S3 only when the bucket and both keys exist. STORAGE_DRIVER=s3 without them must not sign URLs. */
+    storageDriver: (s3Ready ? 's3' : 'local') as 'local' | 's3',
+    s3Ready,
     corsOrigins: [env.FRONTEND_URL, ...env.CORS_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean)],
     maxUploadBytes: env.MAX_UPLOAD_MB * 1024 * 1024,
 };

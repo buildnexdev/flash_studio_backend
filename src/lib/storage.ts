@@ -99,6 +99,9 @@ class S3Storage implements StorageDriver {
         endpoint: config.S3_ENDPOINT || undefined,
         forcePathStyle: config.S3_FORCE_PATH_STYLE,
         credentials: config.AWS_ACCESS_KEY ? { accessKeyId: config.AWS_ACCESS_KEY, secretAccessKey: config.AWS_SECRET_KEY } : undefined,
+        // Default checksum mode is added to presigned GET links. Browsers do not send it, so <img> gets 403.
+        requestChecksumCalculation: 'WHEN_REQUIRED',
+        responseChecksumValidation: 'WHEN_REQUIRED',
     });
 
     async put(key: string, body: Buffer, contentType: string): Promise<void> {
@@ -136,7 +139,18 @@ class S3Storage implements StorageDriver {
     }
 }
 
-export const storage: StorageDriver = config.STORAGE_DRIVER === 's3' ? new S3Storage() : new LocalStorage();
+export const storage: StorageDriver = config.storageDriver === 's3' ? new S3Storage() : new LocalStorage();
+
+/** A missing or broken object store must not fail the whole event response. */
+export async function signedUrlOrNull(key: string | null | undefined, opts?: SignOptions): Promise<string | null> {
+    if (!key) return null;
+    try {
+        return await storage.signedUrl(key, opts);
+    } catch (err) {
+        console.error('[storage] could not sign', key, err instanceof Error ? err.message : err);
+        return null;
+    }
+}
 export const localStorageDriver = storage instanceof LocalStorage ? storage : null;
 
 /** Sign a list of keys at once, preserving nulls. */

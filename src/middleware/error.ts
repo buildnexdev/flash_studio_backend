@@ -49,7 +49,8 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
         });
     }
 
-    // Unknown error: log server-side, never leak internals (SQL, secrets, stack) to the client
+    // Unknown error: log server-side, return actual error message so admins and developers see the exact failure
     console.error(`[error] ${req.method} ${req.originalUrl}`, err);
-    return res.status(500).json({ success: false, message: 'Something went wrong. Please try again.', errors: [] });
+    const errorMessage = err instanceof Error ? err.message : typeof e?.message === 'string' ? e.message : 'Something went wrong. Please try again.';
+    return res.status(500).json({ success: false, message: errorMessage, errors: [] });
 }

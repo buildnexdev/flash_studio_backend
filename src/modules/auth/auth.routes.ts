@@ -6,7 +6,7 @@
 import { Router, type CookieOptions, type Request, type Response } from 'express';
 import { z } from 'zod';
 import { config } from '../../config/env.js';
-import { platformDatabaseName, pool, runInTenant } from '../../db/pool.js';
+import { platformDatabaseName, pool, runInTenant, type TenantScope } from '../../db/pool.js';
 import { authenticate, serializeUser } from '../../middleware/auth.js';
 import { STUDIO_COOKIE } from '../../middleware/tenant.js';
 import { authLimiter, otpLimiter } from '../../middleware/rate-limit.js';
@@ -14,16 +14,29 @@ import { validate } from '../../middleware/validate.js';
 import { asyncHandler, clientIp, ok, userAgent } from '../../utils/http.js';
 import { email, optionalText, password, phone } from '../../utils/schemas.js';
 import { auditCtx } from '../audit/audit.service.js';
-import { resolveTenant } from '../companies/companies.service.js';
+import { findTenantForIdentifier, resolveTenant } from '../companies/companies.service.js';
 import * as auth from './auth.service.js';
 
 export const REFRESH_COOKIE = 'pl_rt';
 
+/** Vercel and Render are different sites, so a Strict cookie is not sent on refresh. */
+const crossSite = config.isProd || process.env.RENDER === 'true';
+
 const cookieOptions = (expires?: Date): CookieOptions => ({
     httpOnly: true,
-    secure: config.isProd,
-    sameSite: 'strict',
+    secure: crossSite,
+    sameSite: crossSite ? 'none' : 'lax',
+    partitioned: crossSite,
     path: '/api/auth',
+    ...(expires ? { expires } : {}),
+});
+
+const studioCookieOptions = (expires?: Date): CookieOptions => ({
+    httpOnly: true,
+    secure: crossSite,
+    sameSite: crossSite ? 'none' : 'lax',
+    partitioned: crossSite,
+    path: '/api',
     ...(expires ? { expires } : {}),
 });
 
@@ -34,9 +47,9 @@ function sendSession(req: Request, res: Response, session: Awaited<ReturnType<ty
     const expires = new Date(session.refreshExpiresAt);
     res.cookie(REFRESH_COOKIE, session.refreshToken, cookieOptions(expires));
     if (session.studioSlug) {
-        res.cookie(STUDIO_COOKIE, session.studioSlug, { httpOnly: true, secure: config.isProd, sameSite: 'strict', path: '/api', expires });
+        res.cookie(STUDIO_COOKIE, session.studioSlug, studioCookieOptions(expires));
     } else {
-        res.clearCookie(STUDIO_COOKIE, { path: '/api' });
+        res.clearCookie(STUDIO_COOKIE, studioCookieOptions());
     }
     const isMobile = req.headers['x-client'] === 'mobile';
     const { refreshToken, ...rest } = session;
@@ -70,16 +83,29 @@ router.post(
     authLimiter,
     validate(z.object({ identifier: z.string().trim().min(3).max(190), password: z.string().min(1).max(200), studio: z.string().trim().max(80).optional() })),
     asyncHandler(async (req, res) => {
-        const slug = (req.body.studio as string | undefined)?.trim().toLowerCase() ?? '';
-        const signIn = async () => {
+        let slug = (req.body.studio as string | undefined)?.trim().toLowerCase() ?? '';
+        if (!slug) {
+            const headerSlug = typeof req.headers['x-studio-slug'] === 'string' ? req.headers['x-studio-slug'].trim().toLowerCase() : '';
+            const cookieSlug = typeof req.cookies?.[STUDIO_COOKIE] === 'string' ? req.cookies[STUDIO_COOKIE].trim().toLowerCase() : '';
+            slug = headerSlug || cookieSlug;
+        }
+
+        let tenantScope: TenantScope;
+        if (slug) {
+            tenantScope = await resolveTenant(slug);
+        } else {
+            const detected = await findTenantForIdentifier(req.body.identifier);
+            if (detected) {
+                tenantScope = detected.scope;
+            } else {
+                tenantScope = { pool, database: platformDatabaseName(), slug: null };
+            }
+        }
+
+        await runInTenant(tenantScope, async () => {
             const session = await auth.login(req.body.identifier, req.body.password, meta(req), auditCtx(req));
             sendSession(req, res, session);
-        };
-        if (!slug) {
-            await runInTenant({ pool, database: platformDatabaseName(), slug: null }, signIn);
-            return;
-        }
-        await runInTenant(await resolveTenant(slug), signIn);
+        });
     }),
 );
 
@@ -103,7 +129,7 @@ router.post(
     asyncHandler(async (req, res) => {
         await auth.logout(readRefresh(req), auditCtx(req));
         res.clearCookie(REFRESH_COOKIE, cookieOptions());
-        res.clearCookie(STUDIO_COOKIE, { path: '/api' });
+        res.clearCookie(STUDIO_COOKIE, studioCookieOptions());
         ok(res, null, 'Signed out');
     }),
 );

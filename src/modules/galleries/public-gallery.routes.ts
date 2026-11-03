@@ -3,22 +3,23 @@
 // Last Edited : 06-10-2026
 import { Router, type Request } from 'express';
 import { z } from 'zod';
-import { query } from '../../db/pool.js';
+import { query, queryOne } from '../../db/pool.js';
 import { imageUpload } from '../../lib/upload.js';
 import { optionalAuth } from '../../middleware/auth.js';
-import { galleryAccessLimiter } from '../../middleware/rate-limit.js';
+import { galleryAccessLimiter, otpLimiter } from '../../middleware/rate-limit.js';
 import { validate } from '../../middleware/validate.js';
 import { badRequest, forbidden, unauthorized } from '../../utils/errors.js';
 import { asyncHandler, clientIp, created, ok, userAgent } from '../../utils/http.js';
 import { optionalText } from '../../utils/schemas.js';
 import { faceSearchEnabled, searchBySelfie } from '../ai/ai.service.js';
 import { auditCtx } from '../audit/audit.service.js';
-import { assertFaceSearchAllowed, readEventPhone, requestEventOtp, verifyEventOtp } from './event-access.js';
+import { assertEventCustomerPhone, assertFaceSearchAllowed, claimEventCustomer, readEventPhone, requestEventOtp, verifyEventOtp } from './event-access.js';
 import { createOrder } from '../orders/orders.service.js';
 import { listGalleryPhotos, openGalleryPhoto } from '../photos/photos.service.js';
 import * as selections from '../selections/selections.service.js';
 import { getSetting } from '../settings/settings.service.js';
-import { gallerySession } from './gallery-session.js';
+import { storage } from '../../lib/storage.js';
+import { gallerySession, signGallerySession } from './gallery-session.js';
 import { accessWithToken, resolveAccess, scopeFilter } from './galleries.service.js';
 
 const router = Router();
@@ -28,10 +29,29 @@ const photoParams = gParams.extend({ photoId: z.coerce.number().int().positive()
 const access = async (req: Request) => {
     const a = await resolveAccess(Number(req.params.galleryId), req.user, req.gallery);
     const gallerySettings = await getSetting('gallery');
-    const claim = readEventPhone(typeof req.headers['x-event-phone'] === 'string' ? req.headers['x-event-phone'] : undefined);
-    const phoneVerified = !!claim && claim.eventId === a.gallery.event_id;
-    if (gallerySettings.requirePhoneVerification && !a.isOwner && !a.isStaff && !phoneVerified) {
-        throw forbidden('Verify your phone number to open this event gallery.');
+    const headerClaim = readEventPhone(typeof req.headers['x-event-phone'] === 'string' ? req.headers['x-event-phone'] : undefined);
+    const eventId = Number(a.gallery.event_id);
+    const sessionPhone = req.gallery?.customerPhone;
+    const claimPhone =
+        headerClaim && Number(headerClaim.eventId) === eventId
+            ? headerClaim.phone
+            : sessionPhone && /^\d{10}$/.test(sessionPhone)
+              ? sessionPhone
+              : null;
+    let phoneVerified = !!claimPhone;
+    const guestLink = !!req.gallery;
+    const qrOpen = !!req.gallery?.openAsQr;
+    // Scanned QR (?src=qr) is open to anyone. The plain /g/ link still needs the customer phone.
+    if (qrOpen) {
+        phoneVerified = true;
+    } else if (guestLink || (!a.isOwner && !a.isStaff)) {
+        if (!claimPhone) {
+            throw forbidden('Enter the phone number for this event.', [], 'PHONE_REQUIRED');
+        }
+        await assertEventCustomerPhone(eventId, claimPhone);
+        phoneVerified = true;
+    } else if (gallerySettings.requirePhoneVerification && !phoneVerified) {
+        throw forbidden('Verify your phone number to open this event gallery.', [], 'PHONE_REQUIRED');
     }
     return { ...a, phoneVerified, requirePhoneVerification: gallerySettings.requirePhoneVerification };
 };
@@ -44,9 +64,14 @@ router.post(
     '/access',
     galleryAccessLimiter,
     optionalAuth,
-    validate(z.object({ token: z.string().trim().min(16).max(128).regex(/^[A-Za-z0-9_-]+$/, 'Invalid QR code') })),
+    validate(
+        z.object({
+            token: z.string().trim().min(16).max(128).regex(/^[A-Za-z0-9_-]+$/, 'Invalid QR code'),
+            openMode: z.enum(['qr', 'link']).optional().default('link'),
+        }),
+    ),
     asyncHandler(async (req, res) => {
-        ok(res, await accessWithToken(req.body.token, req.user, clientIp(req), userAgent(req)), 'Gallery unlocked');
+        ok(res, await accessWithToken(req.body.token, req.user, clientIp(req), userAgent(req), req.body.openMode ?? 'link'), 'Gallery unlocked');
     }),
 );
 
@@ -78,6 +103,18 @@ router.get(
         ]);
         const pricing = await getSetting('pricing');
         const studio = await getSetting('studio');
+        let coverKey = a.gallery.cover_key ?? null;
+        if (!coverKey) {
+            const coverPhoto = await queryOne<{ thumb_key: string | null; preview_key: string | null }>(
+                `SELECT thumb_key, preview_key FROM tblPhoto
+                  WHERE gallery_id = ? AND deleted_at IS NULL AND is_rejected = 0 AND is_published = 1
+                    AND (thumb_key IS NOT NULL OR preview_key IS NOT NULL)
+                  ORDER BY (id = ?) DESC, id LIMIT 1`,
+                [a.gallery.id, a.gallery.cover_photo_id ?? 0],
+            );
+            coverKey = coverPhoto?.preview_key ?? coverPhoto?.thumb_key ?? null;
+        }
+        const coverUrl = coverKey ? await storage.signedUrl(coverKey) : null;
         ok(res, {
             id: a.gallery.id,
             title: a.gallery.title,
@@ -86,6 +123,8 @@ router.get(
             eventId: a.gallery.event_id,
             eventTitle: a.gallery.event_title,
             eventDate: a.gallery.event_date,
+            eventVenue: a.gallery.event_venue ?? null,
+            coverUrl,
             eventStatus: a.gallery.event_status,
             isLive: a.gallery.status === 'LIVE',
             watermark: !!a.gallery.watermark_enabled,
@@ -227,6 +266,20 @@ router.post(
 );
 
 router.post(
+    '/:galleryId/phone/claim',
+    otpLimiter,
+    validate(gParams, 'params'),
+    validate(z.object({ phone: z.string().trim().min(8).max(20) })),
+    asyncHandler(async (req, res) => {
+        if (!req.gallery) throw unauthorized('Scan the QR code again to open this gallery.');
+        const a = await resolveAccess(Number(req.params.galleryId), req.user, req.gallery);
+        const claimed = await claimEventCustomer(Number(a.gallery.event_id), Number(a.gallery.id), req.body.phone);
+        const session = signGallerySession({ ...req.gallery, customerPhone: claimed.phone });
+        ok(res, { ...claimed, session }, 'Phone accepted');
+    }),
+);
+
+router.post(
     '/:galleryId/phone/request',
     validate(gParams, 'params'),
     validate(z.object({ phone: z.string().trim().min(10).max(20) })),
@@ -241,8 +294,11 @@ router.post(
     validate(gParams, 'params'),
     validate(z.object({ phone: z.string().trim().min(10).max(20), code: z.string().regex(/^\d{6}$/), consent: z.boolean().default(false) })),
     asyncHandler(async (req, res) => {
+        if (!req.gallery) throw unauthorized('Scan the QR code again to open this gallery.');
         const a = await resolveAccess(Number(req.params.galleryId), req.user, req.gallery);
-        ok(res, await verifyEventOtp(a.gallery.event_id, a.gallery.id, req.body.phone, req.body.code, req.body.consent), 'Phone verified for this event');
+        const verified = await verifyEventOtp(Number(a.gallery.event_id), Number(a.gallery.id), req.body.phone, req.body.code, req.body.consent);
+        const session = signGallerySession({ ...req.gallery, customerPhone: verified.phone });
+        ok(res, { ...verified, session }, 'Phone verified for this event');
     }),
 );
 

@@ -11,6 +11,7 @@ import { pageQuery } from '../../utils/pagination.js';
 import { idParam, optionalText } from '../../utils/schemas.js';
 import { auditCtx } from '../audit/audit.service.js';
 import * as orders from './orders.service.js';
+import { getShopOrder, listShopOrders, updateShopOrder } from './shop-orders.service.js';
 
 const router = Router();
 router.use(authenticate);
@@ -20,6 +21,7 @@ router.get(
     validate(pageQuery.extend({ status: z.enum(orders.ORDER_STATUSES).optional(), type: z.enum(orders.ORDER_TYPES).optional(), customerId: z.coerce.number().int().positive().optional() }), 'query'),
     asyncHandler(async (req, res) => {
         const q = req.query as unknown as orders.OrderFilter;
+        if (req.user?.companyId) q.companyId = req.user.companyId;
         if (!hasPermission(req.user, 'orders.view', 'orders.manage')) {
             if (!req.user!.customerId) throw forbidden();
             q.customerId = req.user!.customerId;
@@ -55,6 +57,40 @@ router.post(
     ),
     asyncHandler(async (req, res) => {
         created(res, await orders.createOrder(req.body, req.user!, null, auditCtx(req)), 'Order created');
+    }),
+);
+
+router.get(
+    '/shop',
+    asyncHandler(async (req, res) => {
+        if (!hasPermission(req.user, 'orders.view', 'orders.manage', 'pricing.manage')) throw forbidden();
+        const search = typeof req.query.search === 'string' ? req.query.search : undefined;
+        const status = typeof req.query.status === 'string' ? req.query.status : undefined;
+        ok(res, await listShopOrders(search, status, req.user?.companyId));
+    }),
+);
+
+router.get(
+    '/shop/:id',
+    asyncHandler(async (req, res) => {
+        if (!hasPermission(req.user, 'orders.view', 'orders.manage', 'pricing.manage')) throw forbidden();
+        ok(res, await getShopOrder(req.params.id, req.user?.companyId));
+    }),
+);
+
+router.put(
+    '/shop/:id',
+    validate(
+        z.object({
+            status: z.string().optional(),
+            paymentStatus: z.enum(['Pending', 'Paid']).optional(),
+            trackingNumber: z.string().trim().nullable().optional(),
+            courierPartner: z.string().trim().nullable().optional(),
+        }),
+    ),
+    asyncHandler(async (req, res) => {
+        if (!hasPermission(req.user, 'orders.manage', 'pricing.manage', 'delivery.manage')) throw forbidden();
+        ok(res, await updateShopOrder(req.params.id, req.body, req.user?.companyId), 'Store order updated');
     }),
 );
 

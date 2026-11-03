@@ -12,6 +12,7 @@ import { pool } from './db/pool.js';
 import { errorHandler, notFoundHandler } from './middleware/error.js';
 import { bindTenant } from './middleware/tenant.js';
 import { apiLimiter } from './middleware/rate-limit.js';
+import { cryptoMiddleware } from './middleware/crypto.js';
 import { ok } from './utils/http.js';
 import aiRoutes from './modules/ai/ai.routes.js';
 import authRoutes from './modules/auth/auth.routes.js';
@@ -29,11 +30,14 @@ import { deliveryRouter, printingRouter, proofsRouter } from './modules/producti
 import publicRoutes from './modules/public/public.routes.js';
 import selectionRoutes from './modules/selections/selections.routes.js';
 import assetRoutes from './modules/system/asset.routes.js';
+import payrollRoutes from './modules/system/payroll.routes.js';
+import closingRoutes from './modules/system/closing.routes.js';
 import { auditRouter, notificationsRouter, portalRouter, reportsRouter, settingsRouter } from './modules/system/system.routes.js';
 import userRoutes from './modules/users/users.routes.js';
 import companyRoutes from './modules/companies/companies.routes.js';
 import companyPublicRoutes from './modules/companies/companies.public.routes.js';
 import ticketRoutes from './modules/tickets/tickets.routes.js';
+import { cryptoToolRouter } from './modules/system/crypto-tool.routes.js';
 
 function isOriginAllowed(origin: string | undefined): boolean {
     if (!origin) return true;
@@ -71,6 +75,14 @@ export function createApp() {
     // Behind Nginx / a load balancer: trust the first proxy for req.ip and secure cookies.
     app.set('trust proxy', 1);
 
+    app.use((req, _res, next) => {
+        const queryAt = req.url.indexOf('?');
+        const pathOnly = queryAt === -1 ? req.url : req.url.slice(0, queryAt);
+        const query = queryAt === -1 ? '' : req.url.slice(queryAt);
+        if (pathOnly.includes('//')) req.url = pathOnly.replace(/\/{2,}/g, '/') + query;
+        next();
+    });
+
     app.use(
         helmet({
             contentSecurityPolicy: false, // API only; the web app sets its own CSP
@@ -93,8 +105,10 @@ export function createApp() {
                 'Authorization',
                 'X-Requested-With',
                 'X-Gallery-Session',
+                'X-Event-Phone',
                 'X-Client',
                 'X-Studio-Slug',
+                'X-Encrypted',
                 'Accept',
             ],
             methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -113,8 +127,10 @@ export function createApp() {
         }),
     );
     app.use(express.urlencoded({ extended: false, limit: '1mb' }));
+    app.use(cryptoMiddleware);
 
     app.use('/brand', express.static(path.join(process.cwd(), 'public'), { maxAge: '7d', index: false }));
+    app.use('/crypto-tool', cryptoToolRouter);
 
     app.get('/api/health', async (_req, res) => {
         let database = 'up';
@@ -123,7 +139,22 @@ export function createApp() {
         } catch {
             database = 'down';
         }
-        res.status(database === 'up' ? 200 : 503).json({ success: database === 'up', message: database === 'up' ? 'OK' : 'Database unavailable', data: { database, uptime: Math.round(process.uptime()) } });
+        res.status(database === 'up' ? 200 : 503).json({
+            success: database === 'up',
+            message: database === 'up' ? 'OK' : 'Database unavailable',
+            data: {
+                database,
+                uptime: Math.round(process.uptime()),
+                storage: config.storageDriver,
+                s3: {
+                    ready: config.s3Ready,
+                    bucket: Boolean(config.AWS_BUCKET),
+                    accessKey: Boolean(config.AWS_ACCESS_KEY),
+                    secretKey: Boolean(config.AWS_SECRET_KEY),
+                    region: config.AWS_REGION,
+                },
+            },
+        });
     });
 
     app.use(bindTenant);
@@ -142,6 +173,8 @@ export function createApp() {
     app.use('/api/bookings', bookingRoutes);
     app.use('/api/events', eventRoutes);
     app.use('/api/assets', assetRoutes);
+    app.use('/api/payroll', payrollRoutes);
+    app.use('/api/closing', closingRoutes);
     app.use('/api/galleries', galleryRoutes);
     app.use('/api/photos', photoRoutes);
     app.use('/api/selections', selectionRoutes);

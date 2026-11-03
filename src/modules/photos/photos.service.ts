@@ -37,13 +37,25 @@ async function processPhoto(photoId: number): Promise<void> {
     );
     if (!p) return;
     const g = await queryOne<{ watermark_enabled: number; auto_publish: number; status: string }>('SELECT watermark_enabled, auto_publish, status FROM tblGallery WHERE id = ?', [p.gallery_id]);
-    const gs = await getSetting('gallery');
+    const [gs, studio] = await Promise.all([getSetting('gallery'), getSetting('studio')]);
     const isFirstPass = p.status === 'UPLOADED' || p.status === 'PROCESSING';
     if (isFirstPass) await execute("UPDATE tblPhoto SET status = 'PROCESSING', processing_error = NULL WHERE id = ?", [photoId]);
 
     try {
         const source = await storage.get(p.edited_key ?? p.original_key);
-        const variants = await makeVariants(source, { watermark: g?.watermark_enabled ? gs.watermarkText : null, previewSize: gs.previewSize, thumbSize: gs.thumbSize });
+        // Guest previews: company logo (if uploaded) + watermark name + studio phone.
+        let watermarkLogo: Buffer | null = null;
+        if (g?.watermark_enabled && gs.watermarkLogoKey) {
+            watermarkLogo = await storage.get(gs.watermarkLogoKey).catch(() => null);
+        }
+        const studioPhone = (studio.phone || studio.whatsapp || '').trim() || null;
+        const variants = await makeVariants(source, {
+            watermark: g?.watermark_enabled ? gs.watermarkText || studio.name : null,
+            watermarkPhone: g?.watermark_enabled ? studioPhone : null,
+            watermarkLogo,
+            previewSize: gs.previewSize,
+            thumbSize: gs.thumbSize,
+        });
         const base = `events/${p.event_id}/previews/${uuid()}`;
         const previewKey = `${base}.jpg`;
         const thumbKey = `${base}_t.jpg`;
@@ -51,7 +63,14 @@ async function processPhoto(photoId: number): Promise<void> {
         await storage.put(thumbKey, variants.thumb, 'image/jpeg');
 
         const old = await queryOne<{ preview_key: string | null; thumb_key: string | null }>('SELECT preview_key, thumb_key FROM tblPhoto WHERE id = ?', [photoId]);
-        const publish = isFirstPass ? (g?.auto_publish ? 1 : 0) : p.is_published;
+        // Live / published event galleries always show new photos on the guest QR.
+        const publish = isFirstPass
+            ? g?.status === 'LIVE' || g?.status === 'PUBLISHED' || Number(g?.auto_publish ?? 1) === 1
+                ? 1
+                : 0
+            : Number(p.is_published) === 1
+              ? 1
+              : 0;
         await execute(`UPDATE tblPhoto SET preview_key = ?, thumb_key = ?, is_published = ?${isFirstPass ? ", status = 'PREVIEW'" : ''}, processing_error = NULL WHERE id = ?`, [previewKey, thumbKey, publish, photoId]);
         for (const k of [old?.preview_key, old?.thumb_key]) if (k) await storage.delete(k).catch(() => undefined);
 
@@ -95,6 +114,26 @@ export async function recoverPendingPhotos(): Promise<number> {
     return rows.length;
 }
 
+/** After Go live: publish ready previews and re-queue anything still missing a guest preview. */
+export async function prepareEventGallery(eventId: number): Promise<number> {
+    await execute(
+        `UPDATE tblPhoto p
+            JOIN tblGallery g ON g.id = p.gallery_id
+            SET p.is_published = 1
+          WHERE g.event_id = ? AND g.deleted_at IS NULL
+            AND p.deleted_at IS NULL AND p.is_rejected = 0 AND p.preview_key IS NOT NULL`,
+        [eventId],
+    );
+    const rows = await query<{ id: number }>(
+        `SELECT p.id FROM tblPhoto p
+           JOIN tblGallery g ON g.id = p.gallery_id
+          WHERE g.event_id = ? AND p.deleted_at IS NULL AND (p.preview_key IS NULL OR p.status IN ('UPLOADED','PROCESSING'))`,
+        [eventId],
+    );
+    rows.forEach((r) => photoQueue.enqueue(r.id));
+    return rows.length;
+}
+
 /* ---------------- Upload ---------------- */
 
 export interface UploadMeta {
@@ -116,7 +155,7 @@ export interface UploadResult {
 export async function uploadPhotos(files: Express.Multer.File[], meta: UploadMeta, actor: AuthUser, ctx: AuditContext): Promise<UploadResult[]> {
     if (!files.length) throw badRequest('Choose at least one photo.', [{ field: 'files', message: 'Required' }]);
     await assertEventAccess(actor, meta.eventId, 'work');
-    const event = await queryOne<{ id: number; status: string }>('SELECT id, status FROM tblEvent WHERE id = ? AND deleted_at IS NULL', [meta.eventId]);
+    const event = await queryOne<{ id: number; status: string; company_id: number | null }>('SELECT id, status, company_id FROM tblEvent WHERE id = ? AND deleted_at IS NULL', [meta.eventId]);
     if (!event) throw notFound('Event');
     const isManager = hasPermission(actor, 'photos.manage', 'events.manage');
     if (event.status === 'CANCELLED') throw conflict('This event was cancelled.');
@@ -128,6 +167,7 @@ export async function uploadPhotos(files: Express.Multer.File[], meta: UploadMet
         if (!album) throw badRequest('Album not found for this event.', [{ field: 'albumId', message: 'Not found' }]);
     }
 
+    const companyId = actor.companyId ?? event.company_id ?? 1;
     const results: UploadResult[] = [];
     for (const [i, file] of files.entries()) {
         const clientUploadId = meta.clientUploadIds?.[i]?.slice(0, 64) || null;
@@ -151,14 +191,14 @@ export async function uploadPhotos(files: Express.Multer.File[], meta: UploadMet
             const key = `events/${meta.eventId}/originals/${uuid()}${EXT[info.format] ?? path.extname(file.originalname).toLowerCase()}`;
             await storage.put(key, file.buffer, info.mime);
             const res = await execute(
-                `INSERT INTO tblPhoto (event_id, gallery_id, album_id, uploaded_by, client_upload_id, camera_label, file_name, mime_type, size_bytes, checksum, width, height, original_key)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                [meta.eventId, gallery.id, meta.albumId ?? null, actor.id, clientUploadId, meta.cameraLabel ?? null, file.originalname.slice(0, 255), info.mime, file.size, checksum, info.width, info.height, key],
+                `INSERT INTO tblPhoto (company_id, event_id, gallery_id, album_id, uploaded_by, client_upload_id, camera_label, file_name, mime_type, size_bytes, checksum, width, height, original_key)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [companyId, meta.eventId, gallery.id, meta.albumId ?? null, actor.id, clientUploadId, meta.cameraLabel ?? null, file.originalname.slice(0, 255), info.mime, file.size, checksum, info.width, info.height, key],
             );
             const e = info.exif;
             await execute(
-                'INSERT INTO tblPhotoMetadata (photo_id, taken_at, camera_make, camera_model, lens, iso, exposure, aperture, focal_length) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                [res.insertId, e.takenAt ? toSqlDateTime(e.takenAt) : null, e.make, e.model, e.lens, e.iso, e.exposure, e.aperture, e.focalLength],
+                'INSERT INTO tblPhotoMetadata (company_id, photo_id, taken_at, camera_make, camera_model, lens, iso, exposure, aperture, focal_length) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                [companyId, res.insertId, e.takenAt ? toSqlDateTime(e.takenAt) : null, e.make, e.model, e.lens, e.iso, e.exposure, e.aperture, e.focalLength],
             );
             photoQueue.enqueue(res.insertId);
             results.push({ fileName: file.originalname, ok: true, photoId: res.insertId, clientUploadId });
@@ -170,6 +210,16 @@ export async function uploadPhotos(files: Express.Multer.File[], meta: UploadMet
     if (okCount) {
         await audit(ctx, 'PHOTO_UPLOAD', 'photos', meta.eventId, { count: okCount, camera: meta.cameraLabel ?? null });
         emitTo(rooms.event(meta.eventId), 'photo:uploaded', { eventId: meta.eventId, count: okCount, by: actor.name });
+        if (['LIVE', 'UPLOADING', 'PROCESSING', 'COMPLETED'].includes(event.status)) {
+            await execute(
+                `UPDATE tblPhoto p
+                    JOIN tblGallery g ON g.id = p.gallery_id
+                    SET p.is_published = 1
+                  WHERE g.event_id = ? AND g.deleted_at IS NULL
+                    AND p.deleted_at IS NULL AND p.is_rejected = 0 AND p.preview_key IS NOT NULL AND p.is_published = 0`,
+                [meta.eventId],
+            );
+        }
     }
     return results;
 }
@@ -205,6 +255,7 @@ export async function retryProcessing(photoId: number, actor: AuthUser) {
 export interface PhotoFilter {
     page: number;
     pageSize: number;
+    companyId?: number;
     eventId?: number;
     galleryId?: number;
     albumId?: number | 'none';
@@ -222,6 +273,7 @@ export interface PhotoFilter {
 export async function listPhotos(f: PhotoFilter) {
     const where = [f.trash ? 'p.deleted_at IS NOT NULL' : 'p.deleted_at IS NULL'];
     const params: unknown[] = [];
+    if (f.companyId) { where.push('p.company_id = ?'); params.push(f.companyId); }
     if (f.eventId) { where.push('p.event_id = ?'); params.push(f.eventId); }
     if (f.galleryId) { where.push('p.gallery_id = ?'); params.push(f.galleryId); }
     if (f.albumId === 'none') where.push('p.album_id IS NULL');
@@ -240,7 +292,7 @@ export async function listPhotos(f: PhotoFilter) {
     const from = 'FROM tblPhoto p LEFT JOIN tblPhotoMetadata m ON m.photo_id = p.id';
     const total = (await queryOne<{ n: number }>(`SELECT COUNT(*) AS n ${from} WHERE ${w}`, params))?.n ?? 0;
     const rows = await query(
-        `SELECT p.id, p.event_id, p.gallery_id, p.album_id, p.file_name, p.width, p.height, p.size_bytes, p.status, p.is_published, p.is_rejected, p.processing_error,
+        `SELECT p.id, p.company_id, p.event_id, p.gallery_id, p.album_id, p.file_name, p.width, p.height, p.size_bytes, p.status, p.is_published, p.is_rejected, p.processing_error,
                 p.camera_label, p.editor_id, p.thumb_key, p.edited_key IS NOT NULL AS has_edit, p.created_at, p.deleted_at,
                 m.blur_score, m.is_blurry, m.duplicate_of, m.eyes_closed, m.faces_count, m.category, m.tags,
                 (SELECT COUNT(*) FROM tblPhotoSelection s WHERE s.photo_id = p.id) AS selected_count,

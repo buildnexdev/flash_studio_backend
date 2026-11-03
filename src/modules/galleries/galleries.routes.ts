@@ -56,7 +56,9 @@ router.get(
     '/',
     validate(pageQuery.extend({ status: z.enum(['DRAFT', 'LIVE', 'PUBLISHED', 'ARCHIVED']).optional() }), 'query'),
     asyncHandler(async (req, res) => {
-        ok(res, await galleries.listGalleries(req.query as unknown as Parameters<typeof galleries.listGalleries>[0]));
+        const q = req.query as any;
+        if (req.user?.companyId) q.companyId = req.user.companyId;
+        ok(res, await galleries.listGalleries(q));
     }),
 );
 
@@ -64,7 +66,9 @@ router.get(
     '/qr',
     validate(pageQuery.extend({ state: z.enum(['ACTIVE', 'REVOKED', 'EXPIRED', 'EXHAUSTED']).optional() }), 'query'),
     asyncHandler(async (req, res) => {
-        ok(res, await galleries.listQrCodes(req.query as unknown as Parameters<typeof galleries.listQrCodes>[0]));
+        const q = req.query as any;
+        if (req.user?.companyId) q.companyId = req.user.companyId;
+        ok(res, await galleries.listQrCodes(q));
     }),
 );
 
@@ -80,7 +84,7 @@ router.get(
     '/:id',
     validate(idParam, 'params'),
     asyncHandler(async (req, res) => {
-        ok(res, await galleries.getGalleryAdmin(Number(req.params.id)));
+        ok(res, await galleries.getGalleryAdmin(Number(req.params.id), req.user?.companyId));
     }),
 );
 

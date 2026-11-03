@@ -24,6 +24,7 @@ interface ProofPage {
 
 interface ProofRow {
     id: number;
+    company_id: number;
     event_id: number;
     order_id: number | null;
     version: number;
@@ -59,17 +60,19 @@ export async function uploadProof(eventId: number, title: string, files: Express
         pages.push({ key, name: f.originalname.slice(0, 120), width: info.width, height: info.height });
     }
     const version = ((await queryOne<{ v: number | null }>('SELECT MAX(version) AS v FROM tblAlbumProof WHERE event_id = ?', [eventId]))?.v ?? 0) + 1;
-    const res = await execute('INSERT INTO tblAlbumProof (event_id, version, title, pages, uploaded_by) VALUES (?, ?, ?, ?, ?)', [eventId, version, title, json(pages), actor.id]);
+    const companyId = actor.companyId ?? ctx.companyId ?? 1;
+    const res = await execute('INSERT INTO tblAlbumProof (company_id, event_id, version, title, pages, uploaded_by) VALUES (?, ?, ?, ?, ?, ?)', [companyId, eventId, version, title, json(pages), actor.id]);
     await audit(ctx, 'ALBUM_PROOF_UPLOADED', 'proofs', res.insertId, { eventId, version, pages: pages.length });
     return getProof(res.insertId, actor);
 }
 
-export async function listProofs(q: { page: number; pageSize: number; eventId?: number; status?: string; search?: string; customerId?: number }) {
+export async function listProofs(q: { page: number; pageSize: number; eventId?: number; status?: string; search?: string; customerId?: number; companyId?: number | null }) {
     const where = ['1=1'];
     const params: unknown[] = [];
     if (q.eventId) { where.push('ap.event_id = ?'); params.push(q.eventId); }
     if (q.status) { where.push('ap.status = ?'); params.push(q.status); }
     if (q.customerId) { where.push("e.customer_id = ? AND ap.status <> 'DRAFT'"); params.push(q.customerId); }
+    if (q.companyId) { where.push('ap.company_id = ?'); params.push(q.companyId); }
     if (q.search) { where.push('(e.title LIKE ? OR c.name LIKE ? OR ap.title LIKE ?)'); const t = likeTerm(q.search); params.push(t, t, t); }
     const w = where.join(' AND ');
     const from = 'FROM tblAlbumProof ap JOIN tblEvent e ON e.id = ap.event_id JOIN tblCustomer c ON c.id = e.customer_id';
@@ -92,6 +95,9 @@ export async function listProofs(q: { page: number; pageSize: number; eventId?: 
 
 export async function getProof(id: number, actor: AuthUser) {
     const p = await loadProof(id);
+    if (actor.companyId && p.company_id && p.company_id !== actor.companyId && !actor.roles.includes('SUPER_ADMIN')) {
+        throw notFound('Album proof');
+    }
     const isStaff = hasPermission(actor, 'proofs.manage', 'galleries.manage', 'events.view');
     if (!isStaff) {
         if (actor.customerId !== p.customer_id || p.status === 'DRAFT') throw notFound('Album proof');
@@ -127,6 +133,7 @@ export async function respondProof(id: number, user: AuthUser, decision: 'APPROV
         await notifyStaff(['proofs.manage'], { type: 'ALBUM_REVISION', title: 'Album changes requested', body: `${user.name} requested changes to "${p.title}" v${p.version}.`, link: `/editor/proofs?open=${id}` });
         return { status: 'REVISION_REQUESTED' };
     }
+    const companyId = p.company_id ?? 1;
     const orderId = await withTransaction(async (conn) => {
         await execute("UPDATE tblAlbumProof SET status = 'APPROVED', approved_at = UTC_TIMESTAMP(), customer_note = ? WHERE id = ?", [notes, id], conn);
         let order = await queryOne<{ id: number }>(
@@ -143,18 +150,18 @@ export async function respondProof(id: number, user: AuthUser, decision: 'APPROV
             if (!included) return null;
             const orderNo = await nextNumber('order', conn);
             const res = await execute(
-                "INSERT INTO tblOrder (order_no, customer_id, event_id, booking_id, type, status, delivery_method, notes, paid_at) VALUES (?, ?, ?, ?, 'ALBUM', 'PROCESSING', 'PICKUP', 'Album included in booking package', UTC_TIMESTAMP())",
-                [orderNo, p.customer_id, p.event_id, included.booking_id],
+                "INSERT INTO tblOrder (company_id, order_no, customer_id, event_id, booking_id, type, status, delivery_method, notes, paid_at) VALUES (?, ?, ?, ?, ?, 'ALBUM', 'PROCESSING', 'PICKUP', 'Album included in booking package', UTC_TIMESTAMP())",
+                [companyId, orderNo, p.customer_id, p.event_id, included.booking_id],
                 conn,
             );
-            await execute("INSERT INTO tblOrderItem (order_id, item_type, description, quantity, unit_price, total) VALUES (?, 'ALBUM', ?, 1, 0, 0)", [res.insertId, `Album - ${p.event_title} (package)`], conn);
-            await execute("INSERT IGNORE INTO tblDeliveryOrder (order_id, method) VALUES (?, 'PICKUP')", [res.insertId], conn);
+            await execute("INSERT INTO tblOrderItem (company_id, order_id, item_type, description, quantity, unit_price, total) VALUES (?, ?, 'ALBUM', ?, 1, 0, 0)", [companyId, res.insertId, `Album - ${p.event_title} (package)`], conn);
+            await execute("INSERT IGNORE INTO tblDeliveryOrder (company_id, order_id, method) VALUES (?, ?, 'PICKUP')", [companyId, res.insertId], conn);
             order = { id: res.insertId };
         }
         await execute("UPDATE tblOrder SET status = 'PROCESSING' WHERE id = ? AND status = 'PAID'", [order.id], conn);
         await execute('UPDATE tblAlbumProof SET order_id = ? WHERE id = ?', [order.id, id], conn);
         const existing = await queryOne("SELECT id FROM tblPrintOrder WHERE order_id = ? AND kind = 'ALBUM' AND status <> 'CANCELLED'", [order.id], conn);
-        if (!existing) await execute("INSERT INTO tblPrintOrder (order_id, proof_id, kind, quantity, notes) VALUES (?, ?, 'ALBUM', 1, ?)", [order.id, id, `${p.title} v${p.version}`], conn);
+        if (!existing) await execute("INSERT INTO tblPrintOrder (company_id, order_id, proof_id, kind, quantity, notes) VALUES (?, ?, ?, 'ALBUM', 1, ?)", [companyId, order.id, id, `${p.title} v${p.version}`], conn);
         return order.id;
     });
     await audit(ctx, 'ALBUM_APPROVED', 'proofs', id, { orderId });
@@ -193,13 +200,14 @@ const PRINT_FLOW: Record<PrintStatus, PrintStatus[]> = {
     CANCELLED: ['QUEUED'],
 };
 
-export async function listPrintJobs(q: { page: number; pageSize: number; status?: PrintStatus; kind?: string; search?: string; mine?: number }) {
+export async function listPrintJobs(q: { page: number; pageSize: number; status?: PrintStatus; kind?: string; search?: string; mine?: number; companyId?: number | null }) {
     const where = ["o.status NOT IN ('CREATED','CANCELLED')"];
     const params: unknown[] = [];
     if (q.status) { where.push('po.status = ?'); params.push(q.status); }
     else where.push("po.status IN ('QUEUED','PRINTING','PRINTED')");
     if (q.kind) { where.push('po.kind = ?'); params.push(q.kind); }
     if (q.mine) { where.push('po.assigned_to = ?'); params.push(q.mine); }
+    if (q.companyId) { where.push('o.company_id = ?'); params.push(q.companyId); }
     if (q.search) { where.push('(o.order_no LIKE ? OR c.name LIKE ?)'); params.push(likeTerm(q.search), likeTerm(q.search)); }
     const w = where.join(' AND ');
     const from = 'FROM tblPrintOrder po JOIN tblOrder o ON o.id = po.order_id JOIN tblCustomer c ON c.id = o.customer_id LEFT JOIN tblPhoto p ON p.id = po.photo_id LEFT JOIN tblUser u ON u.id = po.assigned_to';
@@ -211,7 +219,10 @@ export async function listPrintJobs(q: { page: number; pageSize: number; status?
         [...params, q.pageSize, offsetOf(q)],
     );
     const items = await Promise.all(rows.map(async ({ thumb_key, ...r }) => ({ ...r, thumb_url: thumb_key ? await storage.signedUrl(thumb_key) : null })));
-    const counts = await query("SELECT po.status, COUNT(*) AS n FROM tblPrintOrder po JOIN tblOrder o ON o.id = po.order_id WHERE o.status NOT IN ('CREATED','CANCELLED') GROUP BY po.status");
+    const counts = await query(
+        `SELECT po.status, COUNT(*) AS n FROM tblPrintOrder po JOIN tblOrder o ON o.id = po.order_id WHERE o.status NOT IN ('CREATED','CANCELLED') ${q.companyId ? 'AND o.company_id = ?' : ''} GROUP BY po.status`,
+        q.companyId ? [q.companyId] : [],
+    );
     return { ...paged(items, total, q), counts: Object.fromEntries(counts.map((c) => [c.status, c.n])) };
 }
 
@@ -281,12 +292,13 @@ const DELIVERY_FLOW: Record<DeliveryStatus, DeliveryStatus[]> = {
     FAILED: ['READY', 'DISPATCHED'],
 };
 
-export async function listDeliveries(q: { page: number; pageSize: number; status?: DeliveryStatus; method?: string; search?: string; mine?: number }) {
+export async function listDeliveries(q: { page: number; pageSize: number; status?: DeliveryStatus; method?: string; search?: string; mine?: number; companyId?: number | null }) {
     const where = ["o.status NOT IN ('CREATED','CANCELLED')"];
     const params: unknown[] = [];
     if (q.status) { where.push('d.status = ?'); params.push(q.status); }
     if (q.method) { where.push('d.method = ?'); params.push(q.method); }
     if (q.mine) { where.push('d.assigned_to = ?'); params.push(q.mine); }
+    if (q.companyId) { where.push('o.company_id = ?'); params.push(q.companyId); }
     if (q.search) { where.push('(o.order_no LIKE ? OR c.name LIKE ? OR c.phone LIKE ? OR d.tracking_no LIKE ?)'); const t = likeTerm(q.search); params.push(t, t, t, t); }
     const w = where.join(' AND ');
     const from = 'FROM tblDeliveryOrder d JOIN tblOrder o ON o.id = d.order_id JOIN tblCustomer c ON c.id = o.customer_id LEFT JOIN tblUser u ON u.id = d.assigned_to';
@@ -297,7 +309,10 @@ export async function listDeliveries(q: { page: number; pageSize: number; status
            ${from} WHERE ${w} ORDER BY FIELD(d.status, 'READY', 'FAILED', 'DISPATCHED', 'IN_TRANSIT', 'PENDING', 'DELIVERED'), d.id DESC LIMIT ? OFFSET ?`,
         [...params, q.pageSize, offsetOf(q)],
     );
-    const counts = await query("SELECT d.status, COUNT(*) AS n FROM tblDeliveryOrder d JOIN tblOrder o ON o.id = d.order_id WHERE o.status NOT IN ('CREATED','CANCELLED') GROUP BY d.status");
+    const counts = await query(
+        `SELECT d.status, COUNT(*) AS n FROM tblDeliveryOrder d JOIN tblOrder o ON o.id = d.order_id WHERE o.status NOT IN ('CREATED','CANCELLED') ${q.companyId ? 'AND o.company_id = ?' : ''} GROUP BY d.status`,
+        q.companyId ? [q.companyId] : [],
+    );
     return { ...paged(items, total, q), counts: Object.fromEntries(counts.map((c) => [c.status, c.n])) };
 }
 
@@ -352,18 +367,22 @@ export async function updateDelivery(
     return queryOne('SELECT * FROM tblDeliveryOrder WHERE id = ?', [id]);
 }
 
-export async function productionDashboard(userId: number) {
+export async function productionDashboard(userId: number, companyId?: number | null) {
+    const cFilter = companyId ? 'AND o.company_id = ?' : '';
+    const cParams = companyId ? [companyId] : [];
     const [print, delivery, mine, readyOrders] = await Promise.all([
-        query("SELECT po.status, po.kind, COUNT(*) AS n FROM tblPrintOrder po JOIN tblOrder o ON o.id = po.order_id WHERE o.status NOT IN ('CREATED','CANCELLED') GROUP BY po.status, po.kind"),
-        query("SELECT d.status, d.method, COUNT(*) AS n FROM tblDeliveryOrder d JOIN tblOrder o ON o.id = d.order_id WHERE o.status NOT IN ('CREATED','CANCELLED') GROUP BY d.status, d.method"),
+        query(`SELECT po.status, po.kind, COUNT(*) AS n FROM tblPrintOrder po JOIN tblOrder o ON o.id = po.order_id WHERE o.status NOT IN ('CREATED','CANCELLED') ${cFilter} GROUP BY po.status, po.kind`, cParams),
+        query(`SELECT d.status, d.method, COUNT(*) AS n FROM tblDeliveryOrder d JOIN tblOrder o ON o.id = d.order_id WHERE o.status NOT IN ('CREATED','CANCELLED') ${cFilter} GROUP BY d.status, d.method`, cParams),
         queryOne<{ prints: number; deliveries: number }>(
-            "SELECT (SELECT COUNT(*) FROM tblPrintOrder WHERE assigned_to = ? AND status IN ('QUEUED','PRINTING','PRINTED')) AS prints, (SELECT COUNT(*) FROM tblDeliveryOrder WHERE assigned_to = ? AND status IN ('READY','DISPATCHED','IN_TRANSIT')) AS deliveries",
-            [userId, userId],
+            `SELECT (SELECT COUNT(*) FROM tblPrintOrder po JOIN tblOrder o ON o.id = po.order_id WHERE po.assigned_to = ? AND po.status IN ('QUEUED','PRINTING','PRINTED') ${cFilter}) AS prints,
+                    (SELECT COUNT(*) FROM tblDeliveryOrder d JOIN tblOrder o ON o.id = d.order_id WHERE d.assigned_to = ? AND d.status IN ('READY','DISPATCHED','IN_TRANSIT') ${cFilter}) AS deliveries`,
+            companyId ? [userId, companyId, userId, companyId] : [userId, userId],
         ),
         query(
             `SELECT o.id, o.order_no, o.type, o.delivery_method, o.updated_at, c.name AS customer_name, c.phone AS customer_phone, d.id AS delivery_id, d.status AS delivery_status
                FROM tblOrder o JOIN tblCustomer c ON c.id = o.customer_id LEFT JOIN tblDeliveryOrder d ON d.order_id = o.id
-              WHERE o.status = 'READY' ORDER BY o.updated_at LIMIT 20`,
+              WHERE o.status = 'READY' ${cFilter} ORDER BY o.updated_at LIMIT 20`,
+            cParams,
         ),
     ]);
     return { print, delivery, mine, readyOrders };

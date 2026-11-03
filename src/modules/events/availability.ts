@@ -8,6 +8,7 @@ export interface SlotInput {
     endTime?: string | null;
     excludeEventId?: number | null;
     excludeBookingId?: number | null;
+    companyId?: number | null;
 }
 
 const clock = (value: string) => (value.length === 5 ? `${value}:00` : value);
@@ -32,21 +33,23 @@ export async function findSlotClashes(input: SlotInput, db?: Db): Promise<Clash[
         `SELECT e.event_code, e.title, e.start_time, e.end_time
            FROM tblEvent e
           WHERE e.deleted_at IS NULL AND e.status <> 'CANCELLED' AND e.event_date = ?
+            AND (? IS NULL OR e.company_id = ?)
             AND e.start_time IS NOT NULL AND e.end_time IS NOT NULL
             AND e.start_time < ? AND e.end_time > ?
             AND (? IS NULL OR e.id <> ?)`,
-        [input.eventDate, end, start, input.excludeEventId ?? null, input.excludeEventId ?? null],
+        [input.eventDate, input.companyId ?? null, input.companyId ?? null, end, start, input.excludeEventId ?? null, input.excludeEventId ?? null],
         db,
     );
     const bookings = await query<{ booking_no: string; start_time: string; end_time: string }>(
         `SELECT b.booking_no, b.start_time, b.end_time
            FROM tblBooking b
           WHERE b.deleted_at IS NULL AND b.status IN ('ADVANCE_PENDING','CONFIRMED','IN_PROGRESS')
+            AND (? IS NULL OR b.company_id = ?)
             AND b.event_date = ? AND b.start_time IS NOT NULL AND b.end_time IS NOT NULL
             AND b.start_time < ? AND b.end_time > ?
             AND (? IS NULL OR b.id <> ?)
             AND NOT EXISTS (SELECT 1 FROM tblEvent ev WHERE ev.booking_id = b.id AND ev.deleted_at IS NULL)`,
-        [input.eventDate, end, start, input.excludeBookingId ?? null, input.excludeBookingId ?? null],
+        [input.companyId ?? null, input.companyId ?? null, input.eventDate, end, start, input.excludeBookingId ?? null, input.excludeBookingId ?? null],
         db,
     );
     return [
