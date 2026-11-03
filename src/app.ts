@@ -33,6 +33,7 @@ import { auditRouter, notificationsRouter, portalRouter, reportsRouter, settings
 import userRoutes from './modules/users/users.routes.js';
 import companyRoutes from './modules/companies/companies.routes.js';
 import companyPublicRoutes from './modules/companies/companies.public.routes.js';
+import ticketRoutes from './modules/tickets/tickets.routes.js';
 
 function isOriginAllowed(origin: string | undefined): boolean {
     if (!origin) return true;
@@ -135,6 +136,7 @@ export function createApp() {
     app.use('/api/gallery', publicGalleryRoutes);
     app.use('/api/companies', companyRoutes);
     app.use('/api/users', userRoutes);
+    app.use('/api/tickets', ticketRoutes);
     app.use('/api/customers', customerRoutes);
     app.use('/api/catalog', catalogRoutes);
     app.use('/api/bookings', bookingRoutes);

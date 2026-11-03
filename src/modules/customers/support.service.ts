@@ -24,7 +24,7 @@ export async function createSupportTicket(input: SupportTicketInput, ctx: AuditC
     // Check if photo request already exists
     if (input.category === 'PHOTO_REQUEST' && input.photoId) {
         const existing = await queryOne(
-            `SELECT id FROM tblSupportTicket WHERE customer_id = ? AND photo_id = ? AND category = 'PHOTO_REQUEST' AND status != 'CLOSED'`,
+            `SELECT id FROM tblSupportTicket WHERE customer_id = ? AND photo_id = ? AND category = 'PHOTO_REQUEST' AND status != 'CLOSED' AND deleted_at IS NULL`,
             [input.customerId, input.photoId]
         );
         if (existing) throw badRequest('A photo request is already pending for this image.');
@@ -32,8 +32,8 @@ export async function createSupportTicket(input: SupportTicketInput, ctx: AuditC
 
     const ticketId = (
         await execute(
-            `INSERT INTO tblSupportTicket (ticket_no, customer_id, category, subject, priority, photo_id, event_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            [ticketNo, input.customerId, input.category, input.subject, input.priority ?? 'MEDIUM', input.photoId ?? null, input.eventId ?? null]
+            `INSERT INTO tblSupportTicket (ticket_no, user_id, customer_id, category, subject, priority, photo_id, event_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [ticketNo, ctx.userId, input.customerId, input.category, input.subject, input.priority ?? 'MEDIUM', input.photoId ?? null, input.eventId ?? null]
         )
     ).insertId;
 
@@ -47,7 +47,7 @@ export async function createSupportTicket(input: SupportTicketInput, ctx: AuditC
 }
 
 export async function listTickets(options: { customerId?: number; status?: string } = {}) {
-    const conditions: string[] = [];
+    const conditions: string[] = ['t.deleted_at IS NULL'];
     const params: unknown[] = [];
 
     if (options.customerId) {
@@ -74,7 +74,7 @@ export async function getTicket(id: number) {
         `SELECT t.*, c.name AS customer_name, c.email AS customer_email 
          FROM tblSupportTicket t 
          LEFT JOIN tblCustomer c ON c.id = t.customer_id 
-         WHERE t.id = ?`,
+         WHERE t.id = ? AND t.deleted_at IS NULL`,
         [id]
     );
     if (!ticket) throw notFound('Ticket');
@@ -90,7 +90,7 @@ export async function getTicket(id: number) {
 }
 
 export async function addTicketMessage(ticketId: number, message: string, isStaff: boolean, ctx: AuditContext) {
-    const ticket = await queryOne<{ id: number }>('SELECT id FROM tblSupportTicket WHERE id = ?', [ticketId]);
+    const ticket = await queryOne<{ id: number }>('SELECT id FROM tblSupportTicket WHERE id = ? AND deleted_at IS NULL', [ticketId]);
     if (!ticket) throw notFound('Ticket');
 
     await execute(
@@ -100,7 +100,7 @@ export async function addTicketMessage(ticketId: number, message: string, isStaf
     
     // Auto-update status if staff replies
     if (isStaff) {
-        await execute(`UPDATE tblSupportTicket SET status = 'IN_PROGRESS' WHERE id = ? AND status = 'OPEN'`, [ticketId]);
+        await execute(`UPDATE tblSupportTicket SET status = 'IN_PROGRESS' WHERE id = ? AND status = 'OPEN' AND deleted_at IS NULL`, [ticketId]);
     }
 
     await audit(ctx, 'SUPPORT_MESSAGE_ADDED', 'customer', ticketId);
@@ -108,6 +108,6 @@ export async function addTicketMessage(ticketId: number, message: string, isStaf
 }
 
 export async function updateTicketStatus(id: number, status: string, ctx: AuditContext) {
-    await execute('UPDATE tblSupportTicket SET status = ? WHERE id = ?', [status, id]);
+    await execute('UPDATE tblSupportTicket SET status = ? WHERE id = ? AND deleted_at IS NULL', [status, id]);
     await audit(ctx, 'SUPPORT_TICKET_STATUS_UPDATED', 'customer', id, { status });
 }
