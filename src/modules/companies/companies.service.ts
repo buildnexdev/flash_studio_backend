@@ -155,9 +155,9 @@ export async function createCompany(input: CompanyInput) {
     await ensureCompanyPlatformSchema();
 
     try {
-        await runMigrations({ databaseUrl: databaseUrlFor(databaseName), log: true });
-        const scope = { pool: poolForDatabase(databaseName), database: databaseName, slug };
-        await runInTenant(scope, async () => {
+    await runMigrations({ databaseUrl: databaseUrlFor(databaseName), log: true });
+    const scope = { pool: poolForDatabase(databaseName), database: databaseName, slug };
+    await runInTenant(scope, async () => {
             await execute(
                 `INSERT INTO tblCompany (name, slug, database_name, status, email, phone, address, city, owner_name, owner_email, is_primary, modules, logo_url)
                  VALUES (?, ?, ?, 'ACTIVE', ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
@@ -175,28 +175,28 @@ export async function createCompany(input: CompanyInput) {
                     input.logoUrl || null,
                 ],
             );
-            await seedRbac(false);
-            await seedSettings();
-            await seedCatalog();
-            await updateSetting(
-                'studio',
-                {
-                    ...DEFAULT_SETTINGS.studio,
-                    name: input.name.trim(),
-                    tagline: input.tagline?.trim() || DEFAULT_SETTINGS.studio.tagline,
-                    email: input.ownerEmail,
-                    phone: input.phone?.trim() || '',
-                    city: input.city?.trim() || '',
+        await seedRbac(false);
+        await seedSettings();
+        await seedCatalog();
+        await updateSetting(
+            'studio',
+            {
+                ...DEFAULT_SETTINGS.studio,
+                name: input.name.trim(),
+                tagline: input.tagline?.trim() || DEFAULT_SETTINGS.studio.tagline,
+                email: input.ownerEmail,
+                phone: input.phone?.trim() || '',
+                city: input.city?.trim() || '',
                     logoUrl: input.logoUrl || '',
-                },
-                null,
-            );
-            await updateSetting('gallery', { ...DEFAULT_SETTINGS.gallery, watermarkText: input.name.trim() }, null);
-            await ensureUser(
-                { role: 'STUDIO_OWNER', name: input.ownerName.trim(), email: input.ownerEmail.trim().toLowerCase(), phone: input.phone?.trim() || null },
-                input.ownerPassword,
-            );
-        });
+            },
+            null,
+        );
+        await updateSetting('gallery', { ...DEFAULT_SETTINGS.gallery, watermarkText: input.name.trim() }, null);
+        await ensureUser(
+            { role: 'STUDIO_OWNER', name: input.ownerName.trim(), email: input.ownerEmail.trim().toLowerCase(), phone: input.phone?.trim() || null },
+            input.ownerPassword,
+        );
+    });
     } catch (err) {
         try {
             await platformExecute(`DROP DATABASE IF EXISTS \`${databaseName}\``);

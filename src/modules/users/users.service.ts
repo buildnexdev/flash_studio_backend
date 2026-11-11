@@ -64,6 +64,22 @@ export interface StaffProfile {
     permanentAddress?: { same?: boolean; line1?: string; line2?: string; city?: string; state?: string; pincode?: string; country?: string };
     education?: { qualification?: string; institution?: string; field?: string; year?: string; grade?: string }[];
     experience?: { company?: string; role?: string; from?: string; to?: string; current?: boolean; description?: string }[];
+    kyc?: {
+        aadhaarNumber?: string;
+        aadhaarName?: string;
+        panNumber?: string;
+        panName?: string;
+        bankAccountName?: string;
+        bankAccountNumber?: string;
+        bankIfsc?: string;
+        bankName?: string;
+        bankBranch?: string;
+    };
+    office?: {
+        phone?: string;
+        email?: string;
+        loginUsername?: string;
+    };
 }
 
 const parseProfile = (raw: unknown): StaffProfile => {

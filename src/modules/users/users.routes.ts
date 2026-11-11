@@ -24,6 +24,20 @@ const profileBody = z.object({
     permanentAddress: addressBody.extend({ same: z.boolean().optional() }).optional(),
     education: z.array(z.object({ qualification: text(120), institution: text(160), field: text(120), year: text(10), grade: text(20) })).max(20).optional(),
     experience: z.array(z.object({ company: text(160), role: text(120), from: text(10), to: text(10), current: z.boolean().optional(), description: text(1000) })).max(30).optional(),
+    kyc: z
+        .object({
+            aadhaarNumber: text(12),
+            aadhaarName: text(120),
+            panNumber: text(10),
+            panName: text(120),
+            bankAccountName: text(120),
+            bankAccountNumber: text(30),
+            bankIfsc: text(11),
+            bankName: text(120),
+            bankBranch: text(120),
+        })
+        .optional(),
+    office: z.object({ phone: text(20), email: text(160), loginUsername: text(120) }).optional(),
 });
 
 const userBody = z.object({
