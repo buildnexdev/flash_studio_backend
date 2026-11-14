@@ -130,8 +130,8 @@ export async function startOnboarding(input: OnboardingPayload) {
         keyId: paymentProvider.publicKey || null,
         providerOrderId: order.id,
         quote: plan,
-        studioName: 'Nammaqr',
-        description: `Nammaqr studio setup — ${input.companyName}`,
+        studioName: 'Buildnexstudio',
+        description: `Buildnexstudio setup — ${input.companyName}`,
         prefill: { name: input.ownerName, email: input.email, contact: input.phone },
     };
 }

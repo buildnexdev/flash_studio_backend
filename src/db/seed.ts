@@ -14,15 +14,16 @@ export const TEST_PASSWORD = process.env.SEED_PASSWORD || 'PhotoLab@2026';
 
 export const TEST_USERS: { role: RoleCode; name: string; email: string; phone: string }[] = [
     { role: 'SUPER_ADMIN', name: 'Super Admin', email: 'admin@photolab.test', phone: '9000000001' },
-    { role: 'STUDIO_OWNER', name: 'Company Owner', email: 'owner@photolab.test', phone: '9000000002' },
+    { role: 'STUDIO_OWNER', name: 'Admin / Owner', email: 'owner@photolab.test', phone: '9000000002' },
     { role: 'COMPANY_ADMIN', name: 'Company Admin', email: 'companyadmin@photolab.test', phone: '9000000008' },
     { role: 'MANAGER', name: 'Studio Manager', email: 'manager@photolab.test', phone: '9000000003' },
+    { role: 'FINANCE', name: 'Finance Team', email: 'finance@photolab.test', phone: '9000000011' },
     { role: 'PHOTOGRAPHER', name: 'Arjun Photographer', email: 'photographer@photolab.test', phone: '9000000004' },
+    { role: 'VIDEOGRAPHER', name: 'Karthik Videographer', email: 'videographer@photolab.test', phone: '9000000012' },
     { role: 'EDITOR_DESIGNER', name: 'Meera Editor', email: 'editor@photolab.test', phone: '9000000005' },
     { role: 'STAFF', name: 'Studio Staff', email: 'staff@photolab.test', phone: '9000000009' },
     { role: 'PRINTER_DELIVERY_STAFF', name: 'Ravi Print & Delivery', email: 'delivery@photolab.test', phone: '9000000006' },
     { role: 'REPORT_MANAGER', name: 'Report Manager', email: 'reports@photolab.test', phone: '9000000010' },
-    { role: 'FINANCE', name: 'Finance Team', email: 'finance@photolab.test', phone: '9000000011' },
     { role: 'CUSTOMER', name: 'Priya Customer', email: 'customer@photolab.test', phone: '9000000007' },
 ];
 

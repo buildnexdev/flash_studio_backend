@@ -310,7 +310,7 @@ export async function forgotPassword(emailRaw: string) {
         sha256(`${email}:${code}`),
         toSqlDateTime(new Date(Date.now() + OTP_TTL_MINUTES * 60_000)),
     ]);
-    const result = await sendEmail(email, 'Your Nammaqr password code', `Your Nammaqr password reset code is ${code}. It expires in ${OTP_TTL_MINUTES} minutes. If you did not request this, ignore this email.`);
+    const result = await sendEmail(email, 'Your Buildnexstudio password code', `Your Buildnexstudio password reset code is ${code}. It expires in ${OTP_TTL_MINUTES} minutes. If you did not request this, ignore this email.`);
     return { sent: true as const, ...(!config.isProd && !result.sent ? { devCode: code } : {}) };
 }
 

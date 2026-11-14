@@ -37,6 +37,7 @@ export const PAGES: PageDef[] = [
     { key: 'printing', label: 'Printing', group: 'Operation', view: ['printing.manage'], manage: ['printing.manage'], api: ['/api/printing'] },
     { key: 'delivery', label: 'Delivery', group: 'Operation', view: ['delivery.manage'], manage: ['delivery.manage'], api: ['/api/delivery'] },
     { key: 'equipment', label: 'Asset management', group: 'Operation', view: ['events.view'], manage: ['events.manage'], api: ['/api/assets'] },
+    { key: 'expenses', label: 'Day-to-day expenses', group: 'Finance', view: ['payments.view'], manage: ['payments.manage'], api: ['/api/finance'] },
     { key: 'payments', label: 'Payments management', group: 'Finance', view: ['payments.view'], manage: ['payments.manage'], api: ['/api/payments'] },
     { key: 'payroll', label: 'Payroll', group: 'Finance', view: ['payments.view', 'staff.manage'], manage: ['payments.manage', 'staff.manage'], api: ['/api/payroll'] },
     { key: 'endOfDay', label: 'End of day', group: 'Finance', view: ['payments.view', 'reports.view'], manage: ['payments.manage'], api: ['/api/closing'] },

@@ -87,10 +87,42 @@ router.get(
     }),
 );
 
+router.post(
+    '/roles',
+    requirePermission('roles.manage'),
+    validate(
+        z.object({
+            code: z.string().trim().min(2).max(40),
+            name: z.string().trim().min(2).max(80),
+            description: optionalText,
+            permissions: z.array(z.string()).optional(),
+        }),
+    ),
+    asyncHandler(async (req, res) => {
+        created(
+            res,
+            await users.createCustomRole(
+                req.body as any,
+                req.user!.roles,
+                auditCtx(req),
+            ),
+            'Role created',
+        );
+    }),
+);
+
+router.delete(
+    '/roles/:code',
+    requirePermission('roles.manage'),
+    asyncHandler(async (req, res) => {
+        ok(res, await users.deleteCustomRole(req.params.code, req.user!.roles, auditCtx(req)), 'Role deleted');
+    }),
+);
+
 router.put(
     '/roles/:code/permissions',
     requirePermission('roles.manage'),
-    validate(z.object({ code: roleEnum }), 'params'),
+    validate(z.object({ code: z.string().min(1) }), 'params'),
     validate(z.object({ permissions: z.array(z.enum(Object.keys(PERMISSIONS) as [Permission, ...Permission[]])) })),
     asyncHandler(async (req, res) => {
         ok(res, await users.setRolePermissions(req.params.code as RoleCode, req.body.permissions, req.user!.roles, auditCtx(req)), 'Permissions updated');

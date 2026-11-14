@@ -38,6 +38,7 @@ import companyRoutes from './modules/companies/companies.routes.js';
 import companyPublicRoutes from './modules/companies/companies.public.routes.js';
 import ticketRoutes from './modules/tickets/tickets.routes.js';
 import { cryptoToolRouter } from './modules/system/crypto-tool.routes.js';
+import { financeRouter } from './modules/finance/finance.routes.js';
 
 function isOriginAllowed(origin: string | undefined): boolean {
     if (!origin) return true;
@@ -62,6 +63,9 @@ function isOriginAllowed(origin: string | undefined): boolean {
 
     // Always allow Render deployments (*.onrender.com)
     if (/^https:\/\/[a-z0-9-]+(\.onrender\.com)$/.test(cleanOrigin)) return true;
+
+    // Always allow buildnexstudio.in and its subdomains
+    if (/^https?:\/\/([a-z0-9-]+\.)*buildnexstudio\.in$/.test(cleanOrigin)) return true;
 
     // Always allow nammaqr.in and its subdomains (apps.nammaqr.in, flashstudio.nammaqr.in, etc.)
     if (/^https?:\/\/([a-z0-9-]+\.)*nammaqr\.in$/.test(cleanOrigin)) return true;
@@ -175,6 +179,7 @@ export function createApp() {
     app.use('/api/assets', assetRoutes);
     app.use('/api/payroll', payrollRoutes);
     app.use('/api/closing', closingRoutes);
+    app.use('/api/finance', financeRouter);
     app.use('/api/galleries', galleryRoutes);
     app.use('/api/photos', photoRoutes);
     app.use('/api/selections', selectionRoutes);
@@ -192,7 +197,7 @@ export function createApp() {
     app.use('/api/portal', portalRouter);
     app.use('/api/ai', aiRoutes);
 
-    app.get('/api', (_req, res) => ok(res, { name: 'Nammaqr Photography API', brand: 'Nammaqr', version: '1.0.0' }));
+    app.get('/api', (_req, res) => ok(res, { name: 'Buildnexstudio API', brand: 'Buildnexstudio', version: '1.0.0' }));
     app.use(notFoundHandler);
     app.use(errorHandler);
     return app;

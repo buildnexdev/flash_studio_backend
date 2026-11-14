@@ -495,7 +495,7 @@ export async function startCompanyCheckout(input: CompanySignupInput) {
     const order =
         amountPaise === 0
             ? { id: `free_${Date.now().toString(36)}`, amount: 0, currency: 'INR' }
-            : await paymentProvider.createOrder(amountPaise, 'INR', `nammaqr-${Date.now().toString(36)}`, { purpose: 'company-signup' });
+            : await paymentProvider.createOrder(amountPaise, 'INR', `buildnex-${Date.now().toString(36)}`, { purpose: 'company-signup' });
     const res = await platformExecute(
         'INSERT INTO tblCompanySignup (payload, amount_paise, provider_order_id, status) VALUES (?, ?, ?, ?)',
         [payload, amountPaise, order.id, 'PENDING'],
@@ -507,7 +507,7 @@ export async function startCompanyCheckout(input: CompanySignupInput) {
         provider: amountPaise === 0 ? ('free' as const) : paymentProvider.name,
         keyId: amountPaise === 0 ? null : paymentProvider.publicKey,
         providerOrderId: order.id,
-        description: 'Nammaqr company registration',
+        description: 'Buildnexstudio company registration',
         modules: COMPANY_MODULES.filter((m) => input.modules.includes(m.code)),
     };
 }
@@ -623,8 +623,8 @@ export async function completeCompanySignup(input: { signupId: number; providerO
     const moduleLabels = COMPANY_MODULES.filter((m) => saved.modules.includes(m.code)).map((m) => m.label).join(', ');
     const mail = await sendEmail(
         saved.ownerEmail,
-        'Welcome to Nammaqr',
-        `Congratulations, ${saved.ownerName.trim()}!\n\n${saved.name.trim()} is now registered on Nammaqr.\nStudio code: ${slug}\nSign in with ${saved.ownerEmail} or ${saved.phone}.\nModules: ${moduleLabels}.\n\nMoments beyond time.`,
+        'Welcome to Buildnexstudio',
+        `Congratulations, ${saved.ownerName.trim()}!\n\n${saved.name.trim()} is now registered on Buildnexstudio.\nStudio code: ${slug}\nSign in with ${saved.ownerEmail} or ${saved.phone}.\nModules: ${moduleLabels}.\n\nMoments beyond time.`,
     );
     return { slug, databaseName, name: saved.name.trim(), emailSent: mail.sent, alreadyRegistered: false };
 }

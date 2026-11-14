@@ -136,7 +136,7 @@ async function syncProfiles(conn: Parameters<Parameters<typeof withTransaction>[
             conn,
         );
     }
-    if (input.roles.includes('PHOTOGRAPHER')) {
+    if (input.roles.includes('PHOTOGRAPHER') || input.roles.includes('VIDEOGRAPHER')) {
         await execute('INSERT INTO tblPhotographer (user_id, camera_gear, specialties) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE camera_gear = VALUES(camera_gear), specialties = VALUES(specialties)', [userId, input.cameraGear ?? null, input.specialties ?? null], conn);
     }
     if (input.roles.includes('EDITOR_DESIGNER')) {
@@ -216,8 +216,8 @@ export async function deleteUser(id: number, actor: { id: number; roles: RoleCod
 }
 
 export async function listRoles() {
-    const roles = await query<{ id: number; code: RoleCode; name: string; description: string | null; level: number; users: number }>(
-        `SELECT r.id, r.code, r.name, r.description, r.level,
+    const roles = await query<{ id: number; code: RoleCode; name: string; description: string | null; level: number; is_system: number; users: number }>(
+        `SELECT r.id, r.code, r.name, r.description, r.level, r.is_system,
                 (SELECT COUNT(*) FROM tblUserRole ur JOIN tblUser u ON u.id = ur.user_id AND u.deleted_at IS NULL WHERE ur.role_id = r.id) AS users
            FROM tblRole r
           ORDER BY CASE WHEN r.level = 100 THEN 0 WHEN r.level = 0 THEN 99 ELSE r.level END, r.name`,
@@ -228,6 +228,58 @@ export async function listRoles() {
         roles: roles.map((r) => ({ ...r, permissions: grants.filter((g) => g.role_id === r.id).map((g) => g.code) })),
         permissions,
     };
+}
+
+export async function createCustomRole(
+    input: { code: string; name: string; description?: string; permissions?: Permission[] },
+    actorRoles: RoleCode[],
+    ctx: AuditContext,
+) {
+    if (!actorRoles.includes('SUPER_ADMIN') && !actorRoles.includes('STUDIO_OWNER') && !actorRoles.includes('COMPANY_ADMIN')) {
+        throw forbidden('Only Super Admin or Studio Admin can create roles.');
+    }
+    const cleanCode = input.code.trim().toUpperCase().replace(/[^A-Z0-9_]/g, '_');
+    if (!cleanCode) throw badRequest('Valid role code is required.');
+    const cleanName = input.name.trim();
+    if (!cleanName) throw badRequest('Role name is required.');
+
+    const dup = await queryOne('SELECT id FROM tblRole WHERE code = ?', [cleanCode]);
+    if (dup) throw conflict('A role with this code already exists.');
+
+    const res = await execute(
+        'INSERT INTO tblRole (code, name, description, is_system, level) VALUES (?, ?, ?, 0, 8)',
+        [cleanCode, cleanName, input.description?.trim() || null],
+    );
+
+    if (input.permissions?.length) {
+        const ids = await query<{ id: number }>('SELECT id FROM tblPermission WHERE code IN (?)', [input.permissions]);
+        for (const p of ids) {
+            await execute('INSERT INTO tblRolePermission (role_id, permission_id) VALUES (?, ?)', [res.insertId, p.id]);
+        }
+    }
+
+    await audit(ctx, 'ROLE_CREATED', 'roles', cleanCode, { name: cleanName });
+    return listRoles();
+}
+
+export async function deleteCustomRole(roleCode: string, actorRoles: RoleCode[], ctx: AuditContext) {
+    if (!actorRoles.includes('SUPER_ADMIN') && !actorRoles.includes('STUDIO_OWNER') && !actorRoles.includes('COMPANY_ADMIN')) {
+        throw forbidden('Only Super Admin or Studio Admin can delete roles.');
+    }
+    const role = await queryOne<{ id: number; is_system: number }>('SELECT id, is_system FROM tblRole WHERE code = ?', [roleCode]);
+    if (!role) throw notFound('Role');
+    if (role.is_system) throw badRequest('Default system roles cannot be deleted.');
+
+    const assignedUsers = await queryOne<{ n: number }>('SELECT COUNT(*) AS n FROM tblUserRole WHERE role_id = ?', [role.id]);
+    if ((assignedUsers?.n ?? 0) > 0) {
+        throw badRequest('Cannot delete role: users are currently assigned to this role.');
+    }
+
+    await execute('DELETE FROM tblRolePermission WHERE role_id = ?', [role.id]);
+    await execute('DELETE FROM tblRole WHERE id = ?', [role.id]);
+
+    await audit(ctx, 'ROLE_DELETED', 'roles', roleCode);
+    return listRoles();
 }
 
 export async function setRolePermissions(roleCode: RoleCode, permissions: Permission[], actorRoles: RoleCode[], ctx: AuditContext) {
