@@ -67,11 +67,11 @@ router.post(
     validate(
         z.object({
             token: z.string().trim().min(16).max(128).regex(/^[A-Za-z0-9_-]+$/, 'Invalid QR code'),
-            openMode: z.enum(['qr', 'link']).optional().default('link'),
+            openMode: z.enum(['qr', 'link']).optional().default('qr'),
         }),
     ),
     asyncHandler(async (req, res) => {
-        ok(res, await accessWithToken(req.body.token, req.user, clientIp(req), userAgent(req), req.body.openMode ?? 'link'), 'Gallery unlocked');
+        ok(res, await accessWithToken(req.body.token, req.user, clientIp(req), userAgent(req), req.body.openMode ?? 'qr'), 'Gallery unlocked');
     }),
 );
 

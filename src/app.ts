@@ -67,6 +67,9 @@ function isOriginAllowed(origin: string | undefined): boolean {
     // Always allow buildnexstudio.in and its subdomains
     if (/^https?:\/\/([a-z0-9-]+\.)*buildnexstudio\.in$/.test(cleanOrigin)) return true;
 
+    // Always allow buildnexdev.in and its subdomains (studio.buildnexdev.in, etc.)
+    if (/^https?:\/\/([a-z0-9-]+\.)*buildnexdev\.in$/.test(cleanOrigin)) return true;
+
     // Always allow nammaqr.in and its subdomains (apps.nammaqr.in, flashstudio.nammaqr.in, etc.)
     if (/^https?:\/\/([a-z0-9-]+\.)*nammaqr\.in$/.test(cleanOrigin)) return true;
 
