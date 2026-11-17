@@ -70,10 +70,13 @@ router.get(
     asyncHandler(async (_req, res) => {
         const website = await getSetting('website');
         const prods = (website as any)?.products;
-        if (Array.isArray(prods) && prods.length > 0) {
-            ok(res, prods);
+        if (Array.isArray(prods)) {
+            // Only return active products added by the company (excluding old demo seed IDs)
+            const demoIds = ['frame-classic', 'frame-gallery', 'album-heirloom', 'prints-fineart', 'cup-photo', 'gift-keepsake', 'flush-mount-album', 'canvas-gallery-wrap', 'acrylic-floating-frame', 'test'];
+            const companyProducts = prods.filter((p: any) => p && p.active !== false && !demoIds.includes(p.id));
+            ok(res, companyProducts);
         } else {
-            ok(res, DEFAULT_SHOP_PRODUCTS);
+            ok(res, []);
         }
     }),
 );
