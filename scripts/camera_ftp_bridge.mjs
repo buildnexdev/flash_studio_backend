@@ -1,4 +1,4 @@
-// Flash Studio - Camera FTP Bridge (Zero Dependencies)
+// Flash Studio - Camera FTP Bridge (High Compatibility Camera-Grade)
 // Developer: Buildnexdev.in
 import net from 'net';
 import fs from 'fs';
@@ -6,7 +6,7 @@ import path from 'path';
 import os from 'os';
 
 // Configuration
-const FTP_PORT = 2121; // Port 2121 avoids needing Administrator privileges on Windows
+const FTP_PORT = parseInt(process.env.FTP_PORT || '2121', 10);
 const DEFAULT_SAVE_DIR = path.resolve(process.env.SAVE_DIR || 'C:\\Shoots\\Live');
 const USERNAME = process.env.FTP_USER || 'camera';
 const PASSWORD = process.env.FTP_PASS || '1234';
@@ -33,10 +33,10 @@ function getLocalIps() {
 const localIps = getLocalIps();
 const primaryIp = localIps.find(i => !i.ip.startsWith('169.254'))?.ip || '127.0.0.1';
 
-// Active clients tracking
+// Active upload counter
 let totalUploaded = 0;
 
-const server = net.createServer((socket) => {
+function handleClient(socket) {
     let authenticated = false;
     let username = '';
     let currentDir = '/';
@@ -44,12 +44,13 @@ const server = net.createServer((socket) => {
     let dataSocket = null;
     let dataSocketPromise = null;
     let dataSocketResolver = null;
-    let isTransferring = false;
 
     socket.setEncoding('utf8');
 
     function send(code, msg) {
-        socket.write(`${code} ${msg}\r\n`);
+        try {
+            socket.write(`${code} ${msg}\r\n`);
+        } catch {}
     }
 
     function resetData() {
@@ -79,7 +80,7 @@ const server = net.createServer((socket) => {
             const cmd = (spaceIdx === -1 ? trimmed : trimmed.slice(0, spaceIdx)).toUpperCase();
             const arg = spaceIdx === -1 ? '' : trimmed.slice(spaceIdx + 1).trim();
 
-            console.log(`[FTP CMD] ${cmd} ${cmd === 'PASS' ? '****' : arg}`);
+            console.log(`[FTP] ${socket.remoteAddress} -> ${cmd} ${cmd === 'PASS' ? '****' : arg}`);
 
             switch (cmd) {
                 case 'USER':
@@ -101,7 +102,7 @@ const server = net.createServer((socket) => {
                     break;
 
                 case 'FEAT':
-                    socket.write('211-Features:\r\n PASV\r\n UTF8\r\n211 End\r\n');
+                    socket.write('211-Features:\r\n PASV\r\n EPSV\r\n UTF8\r\n SIZE\r\n REST STREAM\r\n211 End\r\n');
                     break;
 
                 case 'PWD':
@@ -113,6 +114,7 @@ const server = net.createServer((socket) => {
                     send(200, `Type set to ${arg.toUpperCase()}`);
                     break;
 
+                // Passive Mode (Camera connects to laptop)
                 case 'PASV': {
                     resetData();
                     dataSocketPromise = new Promise((resolve) => {
@@ -124,16 +126,19 @@ const server = net.createServer((socket) => {
                         if (dataSocketResolver) dataSocketResolver(dSocket);
                     });
 
-                    dataServer.listen(0, primaryIp, () => {
+                    const clientBoundIp = (socket.localAddress ? socket.localAddress.replace(/^.*:/, '') : '') || primaryIp;
+
+                    dataServer.listen(0, '0.0.0.0', () => {
                         const port = dataServer.address().port;
                         const p1 = Math.floor(port / 256);
                         const p2 = port % 256;
-                        const ipParts = primaryIp.split('.').join(',');
+                        const ipParts = clientBoundIp.split('.').join(',');
                         send(227, `Entering Passive Mode (${ipParts},${p1},${p2})`);
                     });
                     break;
                 }
 
+                // Extended Passive Mode
                 case 'EPSV': {
                     resetData();
                     dataSocketPromise = new Promise((resolve) => {
@@ -145,10 +150,34 @@ const server = net.createServer((socket) => {
                         if (dataSocketResolver) dataSocketResolver(dSocket);
                     });
 
-                    dataServer.listen(0, primaryIp, () => {
+                    dataServer.listen(0, '0.0.0.0', () => {
                         const port = dataServer.address().port;
                         send(229, `Entering Extended Passive Mode (|||${port}|)`);
                     });
+                    break;
+                }
+
+                // Active Mode (Laptop connects back to Camera)
+                case 'PORT': {
+                    resetData();
+                    const parts = arg.split(',').map((n) => parseInt(n.trim(), 10));
+                    if (parts.length === 6) {
+                        const clientIp = parts.slice(0, 4).join('.');
+                        const clientPort = (parts[4] * 256) + parts[5];
+                        dataSocketPromise = new Promise((resolve, reject) => {
+                            const client = net.connect({ host: clientIp, port: clientPort }, () => {
+                                dataSocket = client;
+                                resolve(client);
+                            });
+                            client.on('error', (err) => {
+                                console.error('[ERROR] Active mode (PORT) connect failed:', err.message);
+                                reject(err);
+                            });
+                        });
+                        send(200, 'PORT command successful.');
+                    } else {
+                        send(501, 'Syntax error in parameters or arguments.');
+                    }
                     break;
                 }
 
@@ -159,6 +188,11 @@ const server = net.createServer((socket) => {
                     send(250, `Directory successfully changed to "${currentDir}".`);
                     break;
 
+                case 'CDUP':
+                    currentDir = '/';
+                    send(250, 'Directory changed to parent.');
+                    break;
+
                 case 'MKD':
                 case 'XMKD': {
                     const dirPath = path.join(DEFAULT_SAVE_DIR, arg);
@@ -167,6 +201,40 @@ const server = net.createServer((socket) => {
                         send(257, `"${arg}" directory created.`);
                     } catch {
                         send(550, 'Failed to create directory.');
+                    }
+                    break;
+                }
+
+                case 'SIZE': {
+                    const filename = path.basename(arg);
+                    const destPath = path.join(DEFAULT_SAVE_DIR, filename);
+                    try {
+                        if (fs.existsSync(destPath)) {
+                            const stats = fs.statSync(destPath);
+                            send(213, stats.size.toString());
+                        } else {
+                            send(550, 'File not found.');
+                        }
+                    } catch {
+                        send(550, 'Could not get file size.');
+                    }
+                    break;
+                }
+
+                case 'LIST':
+                case 'NLST': {
+                    send(150, 'Here comes the directory listing.');
+                    try {
+                        const dSocket = dataSocket || await dataSocketPromise;
+                        const files = fs.readdirSync(DEFAULT_SAVE_DIR);
+                        dSocket.write(files.join('\r\n') + '\r\n');
+                        dSocket.end();
+                        send(226, 'Directory send OK.');
+                        resetData();
+                    } catch (err) {
+                        console.error('[ERROR] LIST error:', err.message);
+                        send(425, "Can't open data connection.");
+                        resetData();
                     }
                     break;
                 }
@@ -184,7 +252,7 @@ const server = net.createServer((socket) => {
 
                         writeStream.on('finish', () => {
                             totalUploaded++;
-                            console.log(`[SUCCESS] Photo Received: ${filename} -> Saved to: ${destPath} (Total: ${totalUploaded})`);
+                            console.log(`\x1b[32m[SUCCESS] Photo Received:\x1b[0m ${filename} -> Saved to: ${destPath} (Total: ${totalUploaded})`);
                             send(226, 'Transfer complete.');
                             resetData();
                         });
@@ -202,6 +270,18 @@ const server = net.createServer((socket) => {
                     break;
                 }
 
+                case 'DELE':
+                    send(250, 'File deleted.');
+                    break;
+
+                case 'REST':
+                    send(350, 'Restarting at 0.');
+                    break;
+
+                case 'OPTS':
+                    send(200, 'Option accepted.');
+                    break;
+
                 case 'NOOP':
                     send(200, 'OK');
                     break;
@@ -212,22 +292,22 @@ const server = net.createServer((socket) => {
                     break;
 
                 default:
+                    console.log(`[FTP UNHANDLED] ${cmd} ${arg}`);
                     send(502, 'Command not implemented.');
                     break;
             }
         }
     });
 
-    socket.on('close', () => {
-        resetData();
-    });
-
+    socket.on('close', () => resetData());
     socket.on('error', (err) => {
         console.error('[SOCKET ERROR]', err.message);
         resetData();
     });
-});
+}
 
+// Start primary server on port 2121
+const server = net.createServer(handleClient);
 server.listen(FTP_PORT, '0.0.0.0', () => {
     console.clear();
     console.log('\x1b[32m%s\x1b[0m', '================================================================');
@@ -239,7 +319,7 @@ server.listen(FTP_PORT, '0.0.0.0', () => {
     localIps.forEach((item, index) => {
         console.log(`  \x1b[1mHost Name (IP ${index + 1})\x1b[0m : \x1b[32m${item.ip}\x1b[0m  (${item.name})`);
     });
-    console.log(`  \x1b[1mPort Number    \x1b[0m : \x1b[32m${FTP_PORT}\x1b[0m`);
+    console.log(`  \x1b[1mPort Number    \x1b[0m : \x1b[32m${FTP_PORT}\x1b[0m (or 21 if running as Admin)`);
     console.log(`  \x1b[1mUser Name      \x1b[0m : \x1b[32m${USERNAME}\x1b[0m`);
     console.log(`  \x1b[1mPassword       \x1b[0m : \x1b[32m${PASSWORD}\x1b[0m`);
     console.log(`  \x1b[1mSecure Protocol\x1b[0m : \x1b[32mOFF\x1b[0m (Standard FTP)`);
@@ -248,12 +328,22 @@ server.listen(FTP_PORT, '0.0.0.0', () => {
     console.log(`  \x1b[35mTarget Save Folder: \x1b[0m\x1b[4m${DEFAULT_SAVE_DIR}\x1b[0m`);
     console.log('');
     console.log('\x1b[36m%s\x1b[0m', 'HOW IT WORKS:');
-    console.log('  1. Connect your Camera to this Laptop via Wi-Fi or Hotspot.');
+    console.log('  1. Connect your Camera to this Laptop via Wi-Fi or Mobile Hotspot.');
     console.log('  2. In Camera: Menu -> Network -> FTP Transfer Func. -> Auto Transfer: ON');
-    console.log('  3. In Chrome: Open Flash Studio -> Upload Page -> Click "Connect camera folder"');
+    console.log('  3. In Chrome: Open Buildnex Studio -> Upload Page -> Click "Connect camera folder"');
     console.log(`     and select "${DEFAULT_SAVE_DIR}".`);
-    console.log('  4. Photos shot on camera appear live in the gallery!');
+    console.log('  4. Photos shot on camera appear live in the QR gallery!');
     console.log('\x1b[32m%s\x1b[0m', '================================================================');
     console.log('Waiting for camera connections... (Press Ctrl+C to stop)');
     console.log('');
 });
+
+// Also try to listen on Port 21 (Standard FTP) if available
+try {
+    const server21 = net.createServer(handleClient);
+    server21.listen(21, '0.0.0.0', () => {
+        console.log('  \x1b[32m✔ Standard Port 21 is also ACTIVE!\x1b[0m (Cameras defaulting to 21 will work!)');
+    }).on('error', () => {
+        // Port 21 already in use or requires Admin - Port 2121 is the reliable fallback
+    });
+} catch {}

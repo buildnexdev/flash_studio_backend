@@ -274,7 +274,7 @@ async function scanDirectory(dir) {
 console.log('\x1b[32m================================================================\x1b[0m');
 console.log('\x1b[1m\x1b[36m   ⚡ BUILDNEX STUDIO - MULTI-COMPANY LIVE CAMERA SYNC ⚡   \x1b[0m');
 console.log('\x1b[32m================================================================\x1b[0m');
-console.log(`Watching Root   : \x1b[33${BASE_WATCH_DIR}\x1b[0m`);
+console.log(`Watching Root   : \x1b[33m${BASE_WATCH_DIR}\x1b[0m`);
 console.log(`Primary Storage : \x1b[33m${STORAGE_ROOT}\x1b[0m`);
 console.log(`Backup Storage  : \x1b[33m${FALLBACK_STORAGE_ROOT}\x1b[0m\n`);
 
