@@ -1,6 +1,7 @@
-// Buildnex Studio - Multi-Company Cloud Camera Auto-Sync
+// Buildnex Studio - Multi-Company Cloud Camera Auto-Sync with AWS S3 Support
 // Developer: Buildnexdev.in
 // Ingests photos from /var/www/live_shoots/<company>/ into the company's active event & QR gallery
+// Supports company-wise folder structuring in AWS S3 and local storage
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -8,23 +9,51 @@ import crypto from 'node:crypto';
 import mysql from 'mysql2/promise';
 import sharp from 'sharp';
 import dotenv from 'dotenv';
+import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 
 dotenv.config();
 
 const BASE_WATCH_DIR = process.env.LIVE_SHOOTS_DIR || '/var/www/live_shoots';
 
-// Storage directories: backend serves from ./storage by default, mirror to ./uploads as well
+// Storage directories: local fallback/cache
 const STORAGE_ROOT = path.resolve(process.env.LOCAL_STORAGE_DIR || './storage');
 const FALLBACK_STORAGE_ROOT = path.resolve('./uploads');
 
 // Company folder mappings (folder name -> companyID)
-// Supports /flash/ -> 1, /waas/ -> 2, /wass/ -> 2
 const COMPANY_MAP = {
     flash: 1,
     flashlight: 1,
     waas: 2,
     wass: 2,
 };
+
+const COMPANY_MAP_REVERSE = {
+    1: 'flashlight',
+    2: 'waas',
+};
+
+// AWS S3 Configuration
+const s3Bucket = process.env.AWS_BUCKET || process.env.AWS_S3_BUCKET || process.env.S3_BUCKET;
+const s3Region = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || 'ap-south-1';
+const s3AccessKey = process.env.AWS_ACCESS_KEY || process.env.AWS_ACCESS_KEY_ID;
+const s3SecretKey = process.env.AWS_SECRET_KEY || process.env.AWS_SECRET_ACCESS_KEY;
+const s3Endpoint = process.env.S3_ENDPOINT;
+const s3ForcePathStyle = process.env.S3_FORCE_PATH_STYLE === 'true';
+
+const isS3Enabled = Boolean(s3Bucket && s3AccessKey && s3SecretKey);
+let s3Client = null;
+
+if (isS3Enabled) {
+    s3Client = new S3Client({
+        region: s3Region,
+        endpoint: s3Endpoint || undefined,
+        forcePathStyle: s3ForcePathStyle,
+        credentials: {
+            accessKeyId: s3AccessKey,
+            secretAccessKey: s3SecretKey,
+        },
+    });
+}
 
 // Setup MySQL Pool
 const pool = mysql.createPool({
@@ -42,22 +71,33 @@ function sha256(buf) {
     return crypto.createHash('sha256').update(buf).digest('hex');
 }
 
+async function uploadToS3(key, buffer, contentType) {
+    if (!s3Client || !s3Bucket) return false;
+    await s3Client.send(
+        new PutObjectCommand({
+            Bucket: s3Bucket,
+            Key: key,
+            Body: buffer,
+            ContentType: contentType,
+        })
+    );
+    return true;
+}
+
 // Quick check if file is ready without blocking other photos
 async function isFileReadyAndNonZero(filePath) {
     try {
         if (!fs.existsSync(filePath)) return false;
         const initialStat = fs.statSync(filePath);
         if (initialStat.size === 0) {
-            // Wait 1.5 seconds once to see if camera is just beginning to write
-            await new Promise((r) => setTimeout(r, 1500));
+            await new Promise((r) => setTimeout(r, 1200));
             if (!fs.existsSync(filePath)) return false;
             const secondStat = fs.statSync(filePath);
             return secondStat.size > 0;
         }
 
-        // Has size, verify it's finished writing (size stable for 600ms)
         const size1 = initialStat.size;
-        await new Promise((r) => setTimeout(r, 600));
+        await new Promise((r) => setTimeout(r, 500));
         if (!fs.existsSync(filePath)) return false;
         const size2 = fs.statSync(filePath).size;
         return size1 > 0 && size1 === size2;
@@ -73,12 +113,10 @@ function getCompanyIdFromPath(filePath) {
     const topFolder = segments[0];
 
     if (COMPANY_MAP[topFolder]) return COMPANY_MAP[topFolder];
-
-    // Fallback keyword checks
     if (relative.includes('waas') || relative.includes('wass')) return 2;
     if (relative.includes('flash')) return 1;
 
-    return 1; // default company
+    return 1;
 }
 
 async function processPhoto(filePath) {
@@ -91,7 +129,6 @@ async function processPhoto(filePath) {
     // Fast check: is file ready & non-zero?
     const ready = await isFileReadyAndNonZero(filePath);
     if (!ready) {
-        // Check if 0 byte; if older than 30s, move to processed to avoid clogging
         try {
             const stat = fs.statSync(filePath);
             if (stat.size === 0) {
@@ -111,11 +148,12 @@ async function processPhoto(filePath) {
     console.log(`\n[INGEST] Detected photo: ${filename} (Company #${companyId}) from ${filePath}`);
 
     try {
-        // 1. Find active event for this company
+        // 1. Find active event for this company with company slug
         let [eventRows] = await pool.query(
-            `SELECT e.eventID, e.company_id, g.galleryID, e.title, e.status
+            `SELECT e.eventID, e.company_id, g.galleryID, e.title, e.status, c.slug AS company_slug, c.name AS company_name
              FROM tblEvent e
              JOIN tblGallery g ON g.event_id = e.eventID
+             LEFT JOIN tblCompany c ON c.companyID = e.company_id
              WHERE e.company_id = ?
                AND e.status IN ('LIVE', 'UPLOADING', 'PROCESSING', 'UPCOMING')
                AND e.deleted_at IS NULL
@@ -124,13 +162,14 @@ async function processPhoto(filePath) {
             [companyId]
         );
 
-        // Fallback 1: If no event under this company, find any active 'LIVE' event across the whole system
+        // Fallback 1: If no event under this company, find any active 'LIVE' event across the system
         if (!eventRows.length) {
-            console.log(`[INGEST] No active event found for Company #${companyId}. Falling back to any LIVE event...`);
+            console.log(`[INGEST] No active event for Company #${companyId}. Falling back to any LIVE event...`);
             [eventRows] = await pool.query(
-                `SELECT e.eventID, e.company_id, g.galleryID, e.title, e.status
+                `SELECT e.eventID, e.company_id, g.galleryID, e.title, e.status, c.slug AS company_slug, c.name AS company_name
                  FROM tblEvent e
                  JOIN tblGallery g ON g.event_id = e.eventID
+                 LEFT JOIN tblCompany c ON c.companyID = e.company_id
                  WHERE e.status = 'LIVE'
                    AND e.deleted_at IS NULL
                  ORDER BY e.event_date DESC, e.eventID DESC
@@ -141,9 +180,10 @@ async function processPhoto(filePath) {
         // Fallback 2: Any recent event
         if (!eventRows.length) {
             [eventRows] = await pool.query(
-                `SELECT e.eventID, e.company_id, g.galleryID, e.title, e.status
+                `SELECT e.eventID, e.company_id, g.galleryID, e.title, e.status, c.slug AS company_slug, c.name AS company_name
                  FROM tblEvent e
                  JOIN tblGallery g ON g.event_id = e.eventID
+                 LEFT JOIN tblCompany c ON c.companyID = e.company_id
                  WHERE e.deleted_at IS NULL
                  ORDER BY (e.status = 'LIVE') DESC, (e.status = 'UPCOMING') DESC, e.eventID DESC
                  LIMIT 1`
@@ -181,18 +221,23 @@ async function processPhoto(filePath) {
             return;
         }
 
-        // 3. Inspect image and prepare storage paths
+        // 3. Inspect image and prepare paths (Company-Wise folder structuring)
         const image = sharp(rawBuffer);
         const meta = await image.metadata();
         const width = meta.width || 1920;
         const height = meta.height || 1080;
         const uuid = crypto.randomUUID();
 
-        const origKey = `events/${eventId}/originals/${uuid}.jpg`;
-        const thumbKey = `events/${eventId}/thumbs/${uuid}.webp`;
-        const prevKey = `events/${eventId}/previews/${uuid}.webp`;
+        // Company folder name: e.g. "waas" or "flashlight"
+        const companyFolder = (event.company_slug || (COMPANY_MAP_REVERSE[targetCompanyId] || `company_${targetCompanyId}`))
+            .toLowerCase()
+            .replace(/[^a-z0-9_-]/g, '_');
 
-        // Generate files in memory first
+        const origKey = `${companyFolder}/events/${eventId}/originals/${uuid}.jpg`;
+        const thumbKey = `${companyFolder}/events/${eventId}/thumbs/${uuid}.webp`;
+        const prevKey = `${companyFolder}/events/${eventId}/previews/${uuid}.webp`;
+
+        // Generate files in memory
         const thumbBuffer = await sharp(rawBuffer)
             .rotate()
             .resize({ width: 400, height: 400, fit: 'inside', withoutEnlargement: true })
@@ -205,8 +250,23 @@ async function processPhoto(filePath) {
             .webp({ quality: 85 })
             .toBuffer();
 
-        // Helper to save to a storage target directory
-        const saveToStorageDir = (root) => {
+        // 4. Save to AWS S3 (Company-wise folder structure in S3)
+        if (s3Client && s3Bucket) {
+            try {
+                console.log(`[S3 UPLOAD] Uploading to s3://${s3Bucket}/${companyFolder}/events/${eventId}/...`);
+                await Promise.all([
+                    uploadToS3(origKey, rawBuffer, 'image/jpeg'),
+                    uploadToS3(thumbKey, thumbBuffer, 'image/webp'),
+                    uploadToS3(prevKey, prevBuffer, 'image/webp'),
+                ]);
+                console.log(`\x1b[36m☁ [S3 SUCCESS] Uploaded to S3 folder: ${companyFolder}/events/${eventId}/\x1b[0m`);
+            } catch (s3Err) {
+                console.error(`[S3 ERROR] Failed uploading to S3:`, s3Err.message);
+            }
+        }
+
+        // 5. Also save locally as local fallback / cache
+        const saveToLocal = (root) => {
             try {
                 const absOrig = path.join(root, ...origKey.split('/'));
                 const absThumb = path.join(root, ...thumbKey.split('/'));
@@ -220,15 +280,14 @@ async function processPhoto(filePath) {
                 fs.writeFileSync(absThumb, thumbBuffer);
                 fs.writeFileSync(absPrev, prevBuffer);
             } catch (err) {
-                console.error(`[STORAGE WRITE ERROR] Failed writing to ${root}:`, err.message);
+                console.error(`[LOCAL WRITE ERROR] Failed writing to ${root}:`, err.message);
             }
         };
 
-        // Write to primary (./storage) and fallback (./uploads)
-        saveToStorageDir(STORAGE_ROOT);
-        saveToStorageDir(FALLBACK_STORAGE_ROOT);
+        saveToLocal(STORAGE_ROOT);
+        saveToLocal(FALLBACK_STORAGE_ROOT);
 
-        // 4. Insert into tblPhoto
+        // 6. Insert into tblPhoto
         const [insertRes] = await pool.query(
             `INSERT INTO tblPhoto (
                 company_id, event_id, gallery_id, camera_label, file_name, 
@@ -242,10 +301,11 @@ async function processPhoto(filePath) {
             ]
         );
 
-        // 5. Move original to processed folder
+        // 7. Move original to processed folder
         fs.renameSync(filePath, path.join(processedDir, `${insertRes.insertId}_${filename}`));
 
-        console.log(`\x1b[32m✔ [LIVE ON QR] Photo #${insertRes.insertId} (${filename}) -> Linked to Event "${event.title}" (#${eventId}) Gallery #${galleryId} -> PUBLISHED!\x1b[0m`);
+        const storageType = (s3Client && s3Bucket) ? 'AWS S3 + Local' : 'Local Disk';
+        console.log(`\x1b[32m✔ [LIVE ON QR] Photo #${insertRes.insertId} (${filename}) -> Company: [${companyFolder}] -> Event "${event.title}" (#${eventId}) -> Storage: [${storageType}] -> PUBLISHED!\x1b[0m`);
     } catch (err) {
         console.error(`[ERROR] Processing failed for ${filename}:`, err);
     }
@@ -275,8 +335,8 @@ console.log('\x1b[32m===========================================================
 console.log('\x1b[1m\x1b[36m   ⚡ BUILDNEX STUDIO - MULTI-COMPANY LIVE CAMERA SYNC ⚡   \x1b[0m');
 console.log('\x1b[32m================================================================\x1b[0m');
 console.log(`Watching Root   : \x1b[33m${BASE_WATCH_DIR}\x1b[0m`);
-console.log(`Primary Storage : \x1b[33m${STORAGE_ROOT}\x1b[0m`);
-console.log(`Backup Storage  : \x1b[33m${FALLBACK_STORAGE_ROOT}\x1b[0m\n`);
+console.log(`S3 Storage      : \x1b[35m${isS3Enabled ? `s3://${s3Bucket} (${s3Region})` : 'DISABLED (Using Local Disk)'}\x1b[0m`);
+console.log(`Local Cache     : \x1b[33m${STORAGE_ROOT}\x1b[0m\n`);
 
 async function startPolling() {
     await scanDirectory(BASE_WATCH_DIR);
