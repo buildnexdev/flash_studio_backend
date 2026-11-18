@@ -1,7 +1,6 @@
-// Buildnex Studio - Multi-Company Cloud Camera Auto-Sync with AWS S3 Support
+// Buildnex Studio - Multi-Company Cloud Camera Auto-Sync (Pure AWS S3 Cloud Storage)
 // Developer: Buildnexdev.in
-// Ingests photos from /var/www/live_shoots/<company>/ into the company's active event & QR gallery
-// Supports company-wise folder structuring in AWS S3 and local storage
+// Ingests photos directly to AWS S3 with company-wise folders. Zero server disk usage.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -15,9 +14,8 @@ dotenv.config();
 
 const BASE_WATCH_DIR = process.env.LIVE_SHOOTS_DIR || '/var/www/live_shoots';
 
-// Storage directories: local fallback/cache
-const STORAGE_ROOT = path.resolve(process.env.LOCAL_STORAGE_DIR || './storage');
-const FALLBACK_STORAGE_ROOT = path.resolve('./uploads');
+// Storage directories (used only as fallback if S3 is not configured)
+const LOCAL_STORAGE_ROOT = path.resolve(process.env.LOCAL_STORAGE_DIR || './storage');
 
 // Company folder mappings (folder name -> companyID)
 const COMPANY_MAP = {
@@ -72,7 +70,7 @@ function sha256(buf) {
 }
 
 async function uploadToS3(key, buffer, contentType) {
-    if (!s3Client || !s3Bucket) return false;
+    if (!s3Client || !s3Bucket) throw new Error('S3 client not initialized');
     await s3Client.send(
         new PutObjectCommand({
             Bucket: s3Bucket,
@@ -81,7 +79,6 @@ async function uploadToS3(key, buffer, contentType) {
             ContentType: contentType,
         })
     );
-    return true;
 }
 
 // Quick check if file is ready without blocking other photos
@@ -134,18 +131,16 @@ async function processPhoto(filePath) {
             if (stat.size === 0) {
                 const ageSeconds = (Date.now() - stat.mtimeMs) / 1000;
                 if (ageSeconds > 15) {
-                    const dir = path.dirname(filePath);
-                    const zeroDir = path.join(dir, 'processed', 'zero_bytes');
-                    if (!fs.existsSync(zeroDir)) fs.mkdirSync(zeroDir, { recursive: true });
-                    fs.renameSync(filePath, path.join(zeroDir, filename));
-                    console.log(`[CLEANUP] Moved empty 0-byte file ${filename} to ${zeroDir}`);
+                    // Delete empty stalled file immediately so server disk stays clean
+                    fs.unlinkSync(filePath);
+                    console.log(`[CLEANUP] Deleted empty 0-byte file: ${filename}`);
                 }
             }
         } catch {}
         return;
     }
 
-    console.log(`\n[INGEST] Detected photo: ${filename} (Company #${companyId}) from ${filePath}`);
+    console.log(`\n[INGEST] Detected camera photo: ${filename} (Company #${companyId})`);
 
     try {
         // 1. Find active event for this company with company slug
@@ -191,7 +186,7 @@ async function processPhoto(filePath) {
         }
 
         if (!eventRows.length) {
-            console.warn(`[INGEST] No events found in database! Please create an event in the admin portal.`);
+            console.warn(`[INGEST] No active events found in database! Please create an event in the admin portal.`);
             return;
         }
 
@@ -211,13 +206,10 @@ async function processPhoto(filePath) {
             [eventId, checksum]
         );
 
-        const dir = path.dirname(filePath);
-        const processedDir = path.join(dir, 'processed');
-        if (!fs.existsSync(processedDir)) fs.mkdirSync(processedDir, { recursive: true });
-
         if (dupRows.length) {
             console.log(`[INGEST] Duplicate photo skipped (Photo ID: ${dupRows[0].photoID})`);
-            fs.renameSync(filePath, path.join(processedDir, `${Date.now()}_${filename}`));
+            // Delete duplicate from server
+            try { fs.unlinkSync(filePath); } catch {}
             return;
         }
 
@@ -237,7 +229,7 @@ async function processPhoto(filePath) {
         const thumbKey = `${companyFolder}/events/${eventId}/thumbs/${uuid}.webp`;
         const prevKey = `${companyFolder}/events/${eventId}/previews/${uuid}.webp`;
 
-        // Generate files in memory
+        // Generate thumb & preview directly in RAM
         const thumbBuffer = await sharp(rawBuffer)
             .rotate()
             .resize({ width: 400, height: 400, fit: 'inside', withoutEnlargement: true })
@@ -250,44 +242,44 @@ async function processPhoto(filePath) {
             .webp({ quality: 85 })
             .toBuffer();
 
-        // 4. Save to AWS S3 (Company-wise folder structure in S3)
-        if (s3Client && s3Bucket) {
+        if (isS3Enabled) {
+            // ==========================================
+            // PURE S3 MODE: Zero Server Disk Usage!
+            // ==========================================
+            console.log(`[S3 UPLOAD] Uploading directly to s3://${s3Bucket}/${companyFolder}/events/${eventId}/...`);
+            await Promise.all([
+                uploadToS3(origKey, rawBuffer, 'image/jpeg'),
+                uploadToS3(thumbKey, thumbBuffer, 'image/webp'),
+                uploadToS3(prevKey, prevBuffer, 'image/webp'),
+            ]);
+            console.log(`\x1b[36m☁ [S3 CLOUD] Uploaded all sizes to s3://${s3Bucket}/${companyFolder}/events/${eventId}/\x1b[0m`);
+
+            // Delete original file from server disk immediately
             try {
-                console.log(`[S3 UPLOAD] Uploading to s3://${s3Bucket}/${companyFolder}/events/${eventId}/...`);
-                await Promise.all([
-                    uploadToS3(origKey, rawBuffer, 'image/jpeg'),
-                    uploadToS3(thumbKey, thumbBuffer, 'image/webp'),
-                    uploadToS3(prevKey, prevBuffer, 'image/webp'),
-                ]);
-                console.log(`\x1b[36m☁ [S3 SUCCESS] Uploaded to S3 folder: ${companyFolder}/events/${eventId}/\x1b[0m`);
-            } catch (s3Err) {
-                console.error(`[S3 ERROR] Failed uploading to S3:`, s3Err.message);
-            }
+                fs.unlinkSync(filePath);
+                console.log(`[SERVER CLEAN] Deleted local temporary file ${filename}. Server disk usage: 0 bytes.`);
+            } catch {}
+        } else {
+            // Local fallback only if AWS S3 credentials are not yet entered
+            const absOrig = path.join(LOCAL_STORAGE_ROOT, ...origKey.split('/'));
+            const absThumb = path.join(LOCAL_STORAGE_ROOT, ...thumbKey.split('/'));
+            const absPrev = path.join(LOCAL_STORAGE_ROOT, ...prevKey.split('/'));
+
+            fs.mkdirSync(path.dirname(absOrig), { recursive: true });
+            fs.mkdirSync(path.dirname(absThumb), { recursive: true });
+            fs.mkdirSync(path.dirname(absPrev), { recursive: true });
+
+            fs.writeFileSync(absOrig, rawBuffer);
+            fs.writeFileSync(absThumb, thumbBuffer);
+            fs.writeFileSync(absPrev, prevBuffer);
+
+            // Move to local processed
+            const processedDir = path.join(path.dirname(filePath), 'processed');
+            if (!fs.existsSync(processedDir)) fs.mkdirSync(processedDir, { recursive: true });
+            fs.renameSync(filePath, path.join(processedDir, filename));
         }
 
-        // 5. Also save locally as local fallback / cache
-        const saveToLocal = (root) => {
-            try {
-                const absOrig = path.join(root, ...origKey.split('/'));
-                const absThumb = path.join(root, ...thumbKey.split('/'));
-                const absPrev = path.join(root, ...prevKey.split('/'));
-
-                fs.mkdirSync(path.dirname(absOrig), { recursive: true });
-                fs.mkdirSync(path.dirname(absThumb), { recursive: true });
-                fs.mkdirSync(path.dirname(absPrev), { recursive: true });
-
-                fs.writeFileSync(absOrig, rawBuffer);
-                fs.writeFileSync(absThumb, thumbBuffer);
-                fs.writeFileSync(absPrev, prevBuffer);
-            } catch (err) {
-                console.error(`[LOCAL WRITE ERROR] Failed writing to ${root}:`, err.message);
-            }
-        };
-
-        saveToLocal(STORAGE_ROOT);
-        saveToLocal(FALLBACK_STORAGE_ROOT);
-
-        // 6. Insert into tblPhoto
+        // 4. Insert into tblPhoto (pointing to S3 keys)
         const [insertRes] = await pool.query(
             `INSERT INTO tblPhoto (
                 company_id, event_id, gallery_id, camera_label, file_name, 
@@ -301,11 +293,8 @@ async function processPhoto(filePath) {
             ]
         );
 
-        // 7. Move original to processed folder
-        fs.renameSync(filePath, path.join(processedDir, `${insertRes.insertId}_${filename}`));
-
-        const storageType = (s3Client && s3Bucket) ? 'AWS S3 + Local' : 'Local Disk';
-        console.log(`\x1b[32m✔ [LIVE ON QR] Photo #${insertRes.insertId} (${filename}) -> Company: [${companyFolder}] -> Event "${event.title}" (#${eventId}) -> Storage: [${storageType}] -> PUBLISHED!\x1b[0m`);
+        const storageLocation = isS3Enabled ? `AWS S3 (s3://${s3Bucket}/${companyFolder}/)` : 'Local Disk';
+        console.log(`\x1b[32m✔ [LIVE ON QR] Photo #${insertRes.insertId} (${filename}) -> Event "${event.title}" (#${eventId}) -> Storage: [${storageLocation}] -> PUBLISHED TO QR!\x1b[0m`);
     } catch (err) {
         console.error(`[ERROR] Processing failed for ${filename}:`, err);
     }
@@ -332,11 +321,10 @@ async function scanDirectory(dir) {
 }
 
 console.log('\x1b[32m================================================================\x1b[0m');
-console.log('\x1b[1m\x1b[36m   ⚡ BUILDNEX STUDIO - MULTI-COMPANY LIVE CAMERA SYNC ⚡   \x1b[0m');
+console.log('\x1b[1m\x1b[36m   ⚡ BUILDNEX STUDIO - PURE S3 LIVE CAMERA SYNC ⚡   \x1b[0m');
 console.log('\x1b[32m================================================================\x1b[0m');
 console.log(`Watching Root   : \x1b[33m${BASE_WATCH_DIR}\x1b[0m`);
-console.log(`S3 Storage      : \x1b[35m${isS3Enabled ? `s3://${s3Bucket} (${s3Region})` : 'DISABLED (Using Local Disk)'}\x1b[0m`);
-console.log(`Local Cache     : \x1b[33m${STORAGE_ROOT}\x1b[0m\n`);
+console.log(`Storage Target  : \x1b[35m${isS3Enabled ? `AWS S3 (s3://${s3Bucket}) - Zero Server Storage` : 'Local Disk (Configure AWS in .env for S3)'}\x1b[0m\n`);
 
 async function startPolling() {
     await scanDirectory(BASE_WATCH_DIR);
