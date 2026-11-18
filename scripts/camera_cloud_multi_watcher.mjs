@@ -1,6 +1,7 @@
 // Buildnex Studio - Multi-Company Cloud Camera Auto-Sync (Pure AWS S3 Cloud Storage)
 // Developer: Buildnexdev.in
-// Ingests photos directly to AWS S3 with company-wise folders. Zero server disk usage.
+// Dynamically creates company folders (e.g. FTPImages/companyid<ID>/<EventTitle>/...) in AWS S3
+// Scales automatically to unlimited companies without code changes.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -17,22 +18,9 @@ const BASE_WATCH_DIR = process.env.LIVE_SHOOTS_DIR || '/var/www/live_shoots';
 // Storage directories (used only as fallback if S3 is not configured)
 const LOCAL_STORAGE_ROOT = path.resolve(process.env.LOCAL_STORAGE_DIR || './storage');
 
-// Company folder mappings (folder name -> companyID)
-const COMPANY_MAP = {
-    flash: 1,
-    flashlight: 1,
-    waas: 2,
-    wass: 2,
-};
-
-const COMPANY_MAP_REVERSE = {
-    1: 'flashlight',
-    2: 'waas',
-};
-
 // AWS S3 Configuration
-const s3Bucket = process.env.AWS_BUCKET || process.env.AWS_S3_BUCKET || process.env.S3_BUCKET;
-const s3Region = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || 'ap-south-1';
+const s3Bucket = process.env.AWS_BUCKET || process.env.AWS_S3_BUCKET || process.env.S3_BUCKET || 'buildndexdev-bucket';
+const s3Region = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || 'ap-southeast-2';
 const s3AccessKey = process.env.AWS_ACCESS_KEY || process.env.AWS_ACCESS_KEY_ID;
 const s3SecretKey = process.env.AWS_SECRET_KEY || process.env.AWS_SECRET_ACCESS_KEY;
 const s3Endpoint = process.env.S3_ENDPOINT;
@@ -69,6 +57,71 @@ function sha256(buf) {
     return crypto.createHash('sha256').update(buf).digest('hex');
 }
 
+function sanitizeForS3(str) {
+    return (str || 'Event')
+        .trim()
+        .replace(/\s+/g, '_')
+        .replace(/[^A-Za-z0-9._-]/g, '')
+        .slice(0, 80);
+}
+
+// Dynamic Company Cache from Database (Refreshes every 30s)
+let companyCache = [];
+let lastCompanyFetch = 0;
+
+async function getCompanies() {
+    const now = Date.now();
+    if (now - lastCompanyFetch < 30000 && companyCache.length > 0) {
+        return companyCache;
+    }
+    try {
+        const [rows] = await pool.query(
+            'SELECT companyID, slug, name FROM tblCompany WHERE status = "ACTIVE"'
+        );
+        companyCache = rows;
+        lastCompanyFetch = now;
+    } catch (err) {
+        console.error('[DB ERROR] Failed fetching companies:', err.message);
+    }
+    return companyCache;
+}
+
+// Dynamically resolve Company ID from FTP folder path (Supports unlimited companies!)
+async function resolveCompanyFromPath(filePath) {
+    const relative = path.relative(BASE_WATCH_DIR, filePath);
+    const topFolder = relative.split(/[\\/]/)[0].toLowerCase().trim();
+
+    // 1. Direct number check: e.g. /1/, /2/, /company_1/, /companyid2/, /company3/
+    const numericMatch = topFolder.match(/^(?:company(?:_?id)?)?(\d+)$/i);
+    if (numericMatch) {
+        const id = parseInt(numericMatch[1], 10);
+        return id;
+    }
+
+    // 2. Lookup company slug or name in database
+    const companies = await getCompanies();
+    for (const c of companies) {
+        const slug = (c.slug || '').toLowerCase();
+        const nameClean = (c.name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        const topClean = topFolder.replace(/[^a-z0-9]/g, '');
+
+        if (slug === topFolder || topClean === nameClean || topFolder.includes(slug) || slug.includes(topFolder)) {
+            return c.companyID;
+        }
+    }
+
+    // 3. Substring match across path
+    for (const c of companies) {
+        const slug = (c.slug || '').toLowerCase();
+        if (slug && relative.toLowerCase().includes(slug)) {
+            return c.companyID;
+        }
+    }
+
+    // Default to first available company if unmatched
+    return companies[0]?.companyID || 1;
+}
+
 async function uploadToS3(key, buffer, contentType) {
     if (!s3Client || !s3Bucket) throw new Error('S3 client not initialized');
     await s3Client.send(
@@ -103,25 +156,13 @@ async function isFileReadyAndNonZero(filePath) {
     }
 }
 
-// Find companyID from folder path
-function getCompanyIdFromPath(filePath) {
-    const relative = path.relative(BASE_WATCH_DIR, filePath).toLowerCase();
-    const segments = relative.split(/[\\/]/);
-    const topFolder = segments[0];
-
-    if (COMPANY_MAP[topFolder]) return COMPANY_MAP[topFolder];
-    if (relative.includes('waas') || relative.includes('wass')) return 2;
-    if (relative.includes('flash')) return 1;
-
-    return 1;
-}
-
 async function processPhoto(filePath) {
     const filename = path.basename(filePath);
     if (!/\.(jpe?g|png|webp|heic)$/i.test(filename)) return;
     if (filename.startsWith('.') || filePath.includes('/processed/') || filePath.includes('\\processed\\')) return;
 
-    const companyId = getCompanyIdFromPath(filePath);
+    // Dynamically find company ID
+    const companyId = await resolveCompanyFromPath(filePath);
 
     // Fast check: is file ready & non-zero?
     const ready = await isFileReadyAndNonZero(filePath);
@@ -131,7 +172,6 @@ async function processPhoto(filePath) {
             if (stat.size === 0) {
                 const ageSeconds = (Date.now() - stat.mtimeMs) / 1000;
                 if (ageSeconds > 15) {
-                    // Delete empty stalled file immediately so server disk stays clean
                     fs.unlinkSync(filePath);
                     console.log(`[CLEANUP] Deleted empty 0-byte file: ${filename}`);
                 }
@@ -140,10 +180,10 @@ async function processPhoto(filePath) {
         return;
     }
 
-    console.log(`\n[INGEST] Detected camera photo: ${filename} (Company #${companyId})`);
+    console.log(`\n[INGEST] Detected camera photo: ${filename} (Resolved to Company ID #${companyId})`);
 
     try {
-        // 1. Find active event for this company with company slug
+        // 1. Find active event for this company
         let [eventRows] = await pool.query(
             `SELECT e.eventID, e.company_id, g.galleryID, e.title, e.status, c.slug AS company_slug, c.name AS company_name
              FROM tblEvent e
@@ -157,7 +197,7 @@ async function processPhoto(filePath) {
             [companyId]
         );
 
-        // Fallback 1: If no event under this company, find any active 'LIVE' event across the system
+        // Fallback: If no event under this company, find any active 'LIVE' event across the system
         if (!eventRows.length) {
             console.log(`[INGEST] No active event for Company #${companyId}. Falling back to any LIVE event...`);
             [eventRows] = await pool.query(
@@ -172,19 +212,6 @@ async function processPhoto(filePath) {
             );
         }
 
-        // Fallback 2: Any recent event
-        if (!eventRows.length) {
-            [eventRows] = await pool.query(
-                `SELECT e.eventID, e.company_id, g.galleryID, e.title, e.status, c.slug AS company_slug, c.name AS company_name
-                 FROM tblEvent e
-                 JOIN tblGallery g ON g.event_id = e.eventID
-                 LEFT JOIN tblCompany c ON c.companyID = e.company_id
-                 WHERE e.deleted_at IS NULL
-                 ORDER BY (e.status = 'LIVE') DESC, (e.status = 'UPCOMING') DESC, e.eventID DESC
-                 LIMIT 1`
-            );
-        }
-
         if (!eventRows.length) {
             console.warn(`[INGEST] No active events found in database! Please create an event in the admin portal.`);
             return;
@@ -194,6 +221,7 @@ async function processPhoto(filePath) {
         const eventId = event.eventID;
         const galleryId = event.galleryID;
         const targetCompanyId = event.company_id;
+        const safeEventTitle = sanitizeForS3(event.title);
 
         // 2. Read image buffer & verify integrity
         const rawBuffer = fs.readFileSync(filePath);
@@ -208,26 +236,25 @@ async function processPhoto(filePath) {
 
         if (dupRows.length) {
             console.log(`[INGEST] Duplicate photo skipped (Photo ID: ${dupRows[0].photoID})`);
-            // Delete duplicate from server
             try { fs.unlinkSync(filePath); } catch {}
             return;
         }
 
-        // 3. Inspect image and prepare paths (Company-Wise folder structuring)
+        // 3. Inspect image and prepare paths (Dynamic FTPImages/companyid<ID>/<EventTitle>/...)
         const image = sharp(rawBuffer);
         const meta = await image.metadata();
         const width = meta.width || 1920;
         const height = meta.height || 1080;
         const uuid = crypto.randomUUID();
 
-        // Company folder name: e.g. "waas" or "flashlight"
-        const companyFolder = (event.company_slug || (COMPANY_MAP_REVERSE[targetCompanyId] || `company_${targetCompanyId}`))
-            .toLowerCase()
-            .replace(/[^a-z0-9_-]/g, '_');
+        // Exact S3 key hierarchy requested:
+        // FTPImages/companyid<companyId>/<eventTitle>/originals/...
+        const companyFolder = `companyid${targetCompanyId}`;
+        const s3Prefix = `FTPImages/${companyFolder}/${safeEventTitle}`;
 
-        const origKey = `${companyFolder}/events/${eventId}/originals/${uuid}.jpg`;
-        const thumbKey = `${companyFolder}/events/${eventId}/thumbs/${uuid}.webp`;
-        const prevKey = `${companyFolder}/events/${eventId}/previews/${uuid}.webp`;
+        const origKey = `${s3Prefix}/originals/${uuid}.jpg`;
+        const thumbKey = `${s3Prefix}/thumbs/${uuid}.webp`;
+        const prevKey = `${s3Prefix}/previews/${uuid}.webp`;
 
         // Generate thumb & preview directly in RAM
         const thumbBuffer = await sharp(rawBuffer)
@@ -243,16 +270,16 @@ async function processPhoto(filePath) {
             .toBuffer();
 
         if (isS3Enabled) {
-            // ==========================================
+            // ========================================================
             // PURE S3 MODE: Zero Server Disk Usage!
-            // ==========================================
-            console.log(`[S3 UPLOAD] Uploading directly to s3://${s3Bucket}/${companyFolder}/events/${eventId}/...`);
+            // ========================================================
+            console.log(`[S3 UPLOAD] Uploading directly to s3://${s3Bucket}/${s3Prefix}/...`);
             await Promise.all([
                 uploadToS3(origKey, rawBuffer, 'image/jpeg'),
                 uploadToS3(thumbKey, thumbBuffer, 'image/webp'),
                 uploadToS3(prevKey, prevBuffer, 'image/webp'),
             ]);
-            console.log(`\x1b[36m☁ [S3 CLOUD] Uploaded all sizes to s3://${s3Bucket}/${companyFolder}/events/${eventId}/\x1b[0m`);
+            console.log(`\x1b[36m☁ [S3 CLOUD] Saved to: s3://${s3Bucket}/${s3Prefix}/\x1b[0m`);
 
             // Delete original file from server disk immediately
             try {
@@ -273,7 +300,6 @@ async function processPhoto(filePath) {
             fs.writeFileSync(absThumb, thumbBuffer);
             fs.writeFileSync(absPrev, prevBuffer);
 
-            // Move to local processed
             const processedDir = path.join(path.dirname(filePath), 'processed');
             if (!fs.existsSync(processedDir)) fs.mkdirSync(processedDir, { recursive: true });
             fs.renameSync(filePath, path.join(processedDir, filename));
@@ -293,8 +319,8 @@ async function processPhoto(filePath) {
             ]
         );
 
-        const storageLocation = isS3Enabled ? `AWS S3 (s3://${s3Bucket}/${companyFolder}/)` : 'Local Disk';
-        console.log(`\x1b[32m✔ [LIVE ON QR] Photo #${insertRes.insertId} (${filename}) -> Event "${event.title}" (#${eventId}) -> Storage: [${storageLocation}] -> PUBLISHED TO QR!\x1b[0m`);
+        const storageLocation = isS3Enabled ? `AWS S3 (s3://${s3Bucket}/${s3Prefix}/)` : 'Local Disk';
+        console.log(`\x1b[32m✔ [LIVE ON QR] Photo #${insertRes.insertId} (${filename}) -> Event "${event.title}" -> Storage: [${storageLocation}] -> PUBLISHED TO QR & WEBSITE!\x1b[0m`);
     } catch (err) {
         console.error(`[ERROR] Processing failed for ${filename}:`, err);
     }
@@ -321,10 +347,12 @@ async function scanDirectory(dir) {
 }
 
 console.log('\x1b[32m================================================================\x1b[0m');
-console.log('\x1b[1m\x1b[36m   ⚡ BUILDNEX STUDIO - PURE S3 LIVE CAMERA SYNC ⚡   \x1b[0m');
+console.log('\x1b[1m\x1b[36m   ⚡ BUILDNEX STUDIO - DYNAMIC S3 LIVE CAMERA SYNC ⚡   \x1b[0m');
 console.log('\x1b[32m================================================================\x1b[0m');
 console.log(`Watching Root   : \x1b[33m${BASE_WATCH_DIR}\x1b[0m`);
-console.log(`Storage Target  : \x1b[35m${isS3Enabled ? `AWS S3 (s3://${s3Bucket}) - Zero Server Storage` : 'Local Disk (Configure AWS in .env for S3)'}\x1b[0m\n`);
+console.log(`S3 Bucket       : \x1b[35m${s3Bucket} (${s3Region})\x1b[0m`);
+console.log(`Folder Structure: \x1b[36mFTPImages/companyid<ID>/<EventTitle>/...\x1b[0m`);
+console.log(`Storage Status  : \x1b[32m${isS3Enabled ? 'Pure AWS S3 Cloud (Zero Server Disk Usage)' : 'Local Fallback (Set AWS credentials in .env)'}\x1b[0m\n`);
 
 async function startPolling() {
     await scanDirectory(BASE_WATCH_DIR);
@@ -332,4 +360,4 @@ async function startPolling() {
 }
 
 startPolling();
-console.log('✔ Polling active (checking every 2.5s). Photos arriving via FTP publish to QR automatically!\n');
+console.log('✔ Polling active (checking every 2.5s). Photos arriving via FTP publish to QR & website automatically!\n');
